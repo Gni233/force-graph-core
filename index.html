@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Force Graph Core</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; overflow: hidden; }
+    #app { width: 100vw; height: 100vh; }
+
+    /* 卡片布局 — 圆角 + 柔和阴影 */
+    body.card-layout button {
+      border-radius: 8px !important;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+    }
+    body.card-layout input,
+    body.card-layout select,
+    body.card-layout textarea {
+      border-radius: 8px !important;
+      padding-left: 8px !important;
+    }
+    body.card-layout details {
+      border-radius: 10px !important;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+      padding: 6px 10px !important;
+      margin: 0 0 4px 0 !important;
+    }
+    body.card-layout details[open] {
+      box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+    }
+    body.card-layout .card-canvas {
+      border-radius: 12px !important;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.06);
+    }
+    body.card-layout [style*="z-index:10"] {
+      border-radius: 10px !important;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.12) !important;
+    }
+    body.card-layout [style*="z-index:100"] {
+      border-radius: 8px !important;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.15) !important;
+    }
+
+    /* 暗色滚动条（适配玻璃面板）*/
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.3); }
+    /* Firefox */
+    * { scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.15) transparent; }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>

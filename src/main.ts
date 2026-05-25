@@ -1,0 +1,1761 @@
+import * as d3 from 'd3';
+(window as any).d3 = d3;
+
+import { sharedState } from './shared-state';
+import { createStorage, GraphData, GraphSettings } from './data/storage';
+import { createSimManager } from './graph-sim';
+import { setupCanvasEvents } from './ui-events';
+import { showContextMenu } from './ui-contextmenu';
+import { createEditPanel } from './ui-edit';
+import { buildSettings } from './ui-settings';
+import { getTheme, ThemeConfig } from './theme';
+import { createSidebar } from './ui-sidebar';
+import { createTabBar } from './ui-tabs';
+import { openFolder, restoreFolder, listFileTree, flatFilePaths, readGraphFile, writeGraphFile, deleteFile, renameFile } from './file-system';
+import { saveFolderHandle, loadFolderHandle, clearFolderHandle } from './folder-store';
+import { DEMO_DATA } from './demo-data';
+import { BlurFilter, Graphics } from 'pixi.js';
+import { createThresholdFilter } from './pixi-fluid';
+import { showMedia, positionMedia, hideMedia, isExpanded, clearAllMedia } from './media-nodes';
+(window as any).__triggerSave = () => {}; // 初始化占位，后面会被覆盖
+import { createPixiApp, PixiLayers } from './pixi-app';
+import { createNodeSprite, updateNodePosition, applyNodeVisual, NodeSprite, NodeVisualState } from './pixi-nodes';
+import { updateEdges } from './pixi-edges';
+import { updateGroups } from './pixi-groups';
+import { updateGrid, clearGridCache } from './pixi-grid';
+
+const DEFAULT_SETTINGS: GraphSettings = {
+  linkDist: 120, labelSize: 18, charge: -100, linkStr: 0.3,
+  collideR: 10, centerS: 0.02, groupBound: 0.8,
+  heatingTime: 2, alphaTarget: 0.3, editPanelOpacity: 0.9,
+  useRAFL: true, nodeExpand: 8, lineExpand: 6,
+  showGLabels: true, glMin: 10, glMax: 28,
+  gridVis: true, axisVis: true, axisTicks: true, gridSp: 30,
+  ar: 0.75, graphTheme: 'nord-dark', focusMode: false, fluidAppearance: false, glowAppearance: false, gravityGrid: false, gridWidth: 0.5, categoryLayout: false,
+};
+
+async function main() {
+  const appEl = document.getElementById('app');
+  if (!appEl) return;
+
+  // ===== 布局：全屏画布 + 玻璃悬浮 UI =====
+  const appShell = document.createElement('div');
+  appShell.style.cssText = 'position:relative;width:100vw;height:100vh;overflow:hidden;';
+  appEl.appendChild(appShell);
+
+  // 玻璃效果 CSS 片段
+  const glassCSS = 'background:rgba(40,42,48,0.65);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border:1px solid rgba(255,255,255,0.08);border-radius:8px;color:#d0d0d0;';
+
+  // --- 浮动顶栏（标签 + 搜索 + 操作）---
+  const floatingTop = document.createElement('div');
+  floatingTop.style.cssText = `position:absolute;left:248px;top:6px;right:6px;z-index:10;display:flex;flex-direction:column;gap:4px;padding:4px 8px 6px 8px;${glassCSS}`;
+  appShell.appendChild(floatingTop);
+
+  // --- 标签栏 ---
+  let renderTabs: (tabs: string[], active: string) => void;
+  const tabBarInit = createTabBar(floatingTop, {
+    onSwitchTab: (fileName) => { switchTab(fileName); },
+    onCloseTab: (fileName) => { closeTab(fileName); },
+    onNewTab: () => { createNewTab(); },
+    onReorder: (from, to) => {
+      const item = openTabs.splice(from, 1)[0];
+      openTabs.splice(to, 0, item);
+      renderTabs(openTabs, activeTab);
+      persistTabs();
+    },
+  });
+  renderTabs = tabBarInit.renderTabs;
+
+  // --- 搜索栏 ---
+  const searchRow = document.createElement('div');
+  searchRow.style.cssText = 'display:flex;gap:8px;align-items:center;flex-wrap:wrap;flex-shrink:0;';
+  const fieldSelect = document.createElement('select');
+  fieldSelect.style.cssText = 'font-size:0.85em;';
+  ['名称', '标签', '内容'].forEach((t, i) => { const o = document.createElement('option'); o.value = ['name', 'tags', 'note'][i]; o.textContent = t; fieldSelect.appendChild(o); });
+  searchRow.appendChild(fieldSelect);
+  const matchModeSelect = document.createElement('select');
+  matchModeSelect.style.cssText = 'font-size:0.85em;';
+  ['包含', '开头', '结尾', '模糊'].forEach((t, i) => { const o = document.createElement('option'); o.value = ['contains', 'startsWith', 'endsWith', 'fuzzy'][i]; o.textContent = t; matchModeSelect.appendChild(o); });
+  searchRow.appendChild(matchModeSelect);
+  const modeSelect = document.createElement('select');
+  modeSelect.style.cssText = 'font-size:0.85em;';
+  ['高亮', '只显示'].forEach((t, i) => { const o = document.createElement('option'); o.value = ['highlight', 'show'][i]; o.textContent = t; modeSelect.appendChild(o); });
+  searchRow.appendChild(modeSelect);
+  const searchInput = document.createElement('input');
+  searchInput.type = 'text'; searchInput.placeholder = '搜索...';
+  searchInput.style.cssText = 'flex:1;min-width:120px;font-size:0.85em;padding:2px 6px;border:1px solid #ccc;border-radius:4px;';
+  searchRow.appendChild(searchInput);
+  floatingTop.appendChild(searchRow);
+
+  // --- 操作栏 ---
+  const controlsDetails = document.createElement('details');
+  const controlsSum = document.createElement('summary');
+  controlsSum.textContent = '操作';
+  controlsDetails.appendChild(controlsSum);
+  const controlsDiv = document.createElement('div');
+  controlsDiv.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;align-items:center;padding:4px 0;';
+  controlsDetails.appendChild(controlsDiv);
+  floatingTop.appendChild(controlsDetails);
+
+  // --- PixiJS 画布容器（全屏背景）---
+  const pixiContainer = document.createElement('div');
+  pixiContainer.style.cssText = 'position:absolute;top:0;left:0;right:0;bottom:0;z-index:0;overflow:hidden;';
+  appShell.appendChild(pixiContainer);
+
+  // 多媒体覆盖层容器
+  const mediaOverlayContainer = document.createElement('div');
+  mediaOverlayContainer.style.cssText = 'position:fixed;top:0;left:0;z-index:15;pointer-events:none;';
+  document.body.appendChild(mediaOverlayContainer);
+
+  // PixiJS 初始化（异步）
+  let pixi: PixiLayers | null = null;
+  const pixiReady = createPixiApp(pixiContainer).then(p => { pixi = p; return p; });
+
+  // 框选矩形
+  const selectionBox = document.createElement('div');
+  selectionBox.style.cssText = 'position:absolute;border:2px dashed #5B8FF9;background:rgba(91,143,249,0.1);display:none;pointer-events:none;z-index:20;';
+  appShell.appendChild(selectionBox);
+
+  // --- 设置折叠区 ---
+  const settingsDet = document.createElement('details');
+  const settingsSum = document.createElement('summary');
+  settingsSum.textContent = '设置';
+  settingsDet.appendChild(settingsSum);
+  const setDiv = document.createElement('div');
+  setDiv.style.cssText = 'padding:4px 0;';
+  settingsDet.appendChild(setDiv);
+  settingsDet.style.cssText = `position:absolute;left:248px;right:6px;bottom:6px;z-index:10;max-height:40vh;overflow-y:auto;padding:4px 10px;${glassCSS}`;
+  appShell.appendChild(settingsDet);
+
+  // --- 主题应用函数 ---
+  const applyTheme = (t: ThemeConfig) => {
+    document.body.style.background = t.canvasBackground;
+    const rs = document.documentElement.style;
+    rs.setProperty('--fg-bg', t.uiInputBackground);
+    rs.setProperty('--fg-border', t.uiInputBorder);
+    rs.setProperty('--fg-hover', t.uiButtonBackground);
+    pixiContainer.style.background = t.canvasBackground;
+    [floatingTop, settingsDet].forEach(el => {
+      el.querySelectorAll('button').forEach((b: any) => { b.style.background = t.uiButtonBackground; b.style.color = t.uiButtonTextColor; b.style.border = `1px solid ${t.uiInputBorder}`; });
+      el.querySelectorAll('input, select, textarea').forEach((i: any) => { i.style.background = t.uiInputBackground; i.style.color = t.uiInputTextColor; i.style.border = `1px solid ${t.uiInputBorder}`; });
+    });
+    settingsDet.querySelectorAll('details').forEach((d: any) => { d.style.background = t.uiPanelBackground; d.style.color = t.uiButtonTextColor; });
+    searchRow.style.background = 'transparent';
+    const ea = (window as any).electronAPI;
+    if (ea?.setTitlebarColor) ea.setTitlebarColor(t.canvasBackground);
+  };
+
+  // ===== 侧边栏 =====
+  let openTabs: string[] = [];
+  let activeTab = 'demo';
+  let fileSystemMountPath: string | null = null; // Electron 模式下的文件夹路径
+
+  // 存储适配器：所有图统一走 localStorage
+  const readGraphData = async (fileName: string): Promise<GraphData | null> => {
+    // Electron 模式：从挂载目录读文件
+    if (fileSystemMountPath && fileName !== 'demo') {
+      try {
+        const ea = (window as any).electronAPI;
+        const raw = await ea.readFile(fileSystemMountPath + '/' + fileName);
+        return raw && !raw.error ? JSON.parse(raw) : null;
+      } catch { /* fall through to localStorage */ }
+    }
+    const store = createStorage(fileName);
+    return await store.readData();
+  };
+
+  const writeGraphData = async (fileName: string, data: GraphData): Promise<void> => {
+    const store = createStorage(fileName);
+    await store.writeData(data);
+    // Electron 模式：同步到挂载目录
+    if (fileSystemMountPath && fileName !== 'demo') {
+      try {
+        const ea = (window as any).electronAPI;
+        await ea.writeFile(fileSystemMountPath + '/' + fileName, JSON.stringify(data, null, 2));
+      } catch {}
+    }
+  };
+
+  // --- 标签页持久化 ---
+  const TABS_KEY = 'fg-open-tabs';
+  const ACTIVE_KEY = 'fg-active-tab';
+  function persistTabs() {
+    localStorage.setItem(TABS_KEY, JSON.stringify(openTabs));
+    localStorage.setItem(ACTIVE_KEY, activeTab);
+  }
+  function restoreTabs(): { tabs: string[]; active: string } | null {
+    try {
+      const raw = localStorage.getItem(TABS_KEY);
+      const active = localStorage.getItem(ACTIVE_KEY);
+      if (raw) {
+        const tabs = JSON.parse(raw);
+        if (Array.isArray(tabs) && tabs.length > 0) return { tabs, active: active || tabs[0] };
+      }
+    } catch {}
+    return null;
+  }
+
+  const sidebar = createSidebar(appShell, {
+    onSelectFile: async (path) => { await openTab(path); },
+    onNewFile: async (path) => {
+      const empty: GraphData = { nodes: [], edges: [], groups: [], settings: { ...DEFAULT_SETTINGS } };
+      await writeGraphFile(path, empty);
+      await writeGraphData(path, empty);
+      await openTab(path);
+    },
+    onDeleteFile: async (path) => {
+      await deleteFile(path);
+      openTabs = openTabs.filter(t => t !== path);
+      if (activeTab === path) {
+        activeTab = openTabs.length > 0 ? openTabs[openTabs.length - 1] : 'demo';
+        await loadGraphData(activeTab);
+      }
+      renderTabs(openTabs, activeTab);
+      persistTabs();
+      await refreshFileTree();
+    },
+    onRenameFile: async (oldPath, newName) => {
+      await renameFile(oldPath, newName);
+      const parts = oldPath.split('/'); parts[parts.length - 1] = newName.endsWith('.json') ? newName : newName + '.json';
+      const newPath = parts.join('/');
+      if (activeTab === oldPath) {
+        openTabs = openTabs.map(t => t === oldPath ? newPath : t);
+        await loadGraphData(newPath);
+        renderTabs(openTabs, activeTab);
+        persistTabs();
+      }
+      await refreshFileTree();
+    },
+    onOpenFolder: async () => {
+      // Electron 模式：原生对话框
+      const ea = (window as any).electronAPI;
+      if (ea?.openFolder) {
+        const folderPath = await ea.openFolder();
+        if (folderPath) {
+          localStorage.setItem('fg-folder-path', folderPath);
+          sidebar.setFolderPath(folderPath);
+          fileSystemMountPath = folderPath;
+          await refreshFileTree();
+        }
+        return;
+      }
+      // 浏览器模式：File System Access API
+      const h = await openFolder();
+      if (h) { await saveFolderHandle(h); sidebar.setFolderPath(h.name); await refreshFileTree(); }
+    },
+    onCopyFile: async (path) => {
+      const base = path.replace(/\.json$/, '');
+      let n = 2; let newPath = base + ' ' + n + '.json';
+      while (flatFilePaths(await listFileTree()).includes(newPath)) { n++; newPath = base + ' ' + n + '.json'; }
+      const content = await readGraphData(path);
+      await writeGraphData(newPath, content || { nodes: [], edges: [], groups: [], settings: { ...DEFAULT_SETTINGS } });
+      await refreshFileTree();
+    },
+    onNewFolder: async (path) => {
+      await writeGraphFile(path + '/.gitkeep', { nodes: [], edges: [], groups: [], settings: { ...DEFAULT_SETTINGS } });
+      await deleteFile(path + '/.gitkeep');
+      await refreshFileTree();
+    },
+    onMoveFile: async (src, dstDir) => {
+      const parts = src.split('/'); const name = parts.pop()!;
+      const dstPath = dstDir + '/' + name;
+      const content = await readGraphData(src);
+      await writeGraphData(dstPath, content || { nodes: [], edges: [], groups: [] });
+      await deleteFile(src);
+      if (activeTab === src) { await loadGraphData(dstPath); }
+      await refreshFileTree();
+    },
+  });
+
+  // 侧边栏玻璃效果
+  sidebar.sidebar.style.cssText = `position:absolute;left:2px;top:6px;bottom:6px;z-index:10;width:240px;min-width:180px;display:flex;flex-direction:column;font-size:0.85em;overflow:hidden;${glassCSS}`;
+
+  const refreshFileTree = async () => {
+    // Electron 模式：直接用 fs 读目录
+    const ea = (window as any).electronAPI;
+    if (fileSystemMountPath && ea?.readDir) {
+      const buildTree = async (dirPath: string): Promise<any[]> => {
+        const entries = await ea.readDir(dirPath);
+        if (!entries || entries.error) return [];
+        const result: any[] = [];
+        for (const e of entries) {
+          if (e.name.startsWith('.')) continue;
+          if (e.kind === 'directory') {
+            result.push({ name: e.name, kind: 'directory', children: await buildTree(dirPath + '/' + e.name) });
+          } else if (e.name.endsWith('.json')) {
+            result.push({ name: e.name, kind: 'file', children: [] });
+          }
+        }
+        return result;
+      };
+      const tree = await buildTree(fileSystemMountPath);
+      sidebar.updateFileTree(tree, activeTab);
+      return;
+    }
+    const tree = await listFileTree();
+    sidebar.updateFileTree(tree, activeTab);
+  };
+
+  // ===== 图加载函数 =====
+  async function loadGraphData(fileName: string) {
+    activeTab = fileName;
+    updateGwGh();
+    // 先停掉旧模拟，防止异步间隙触发绘制
+    simManager.getSim()?.stop();
+    // 清除旧节点精灵
+    if (pixi) { pixi.nodeLayer.removeChildren(); pixi.edgeLayer.removeChildren(); pixi.blobLayer.removeChildren(); }
+    nodeSprites.clear(); clearGridCache();
+    const tree = await listFileTree();
+    sidebar.updateFileTree(tree, fileName);
+    const saved = await readGraphData(fileName);
+    if (fileName === 'demo') {
+      // demo 始终从最新 DEMO_DATA 强制重建
+      const demo = JSON.parse(JSON.stringify(DEMO_DATA));
+      graph.nodes = demo.nodes;
+      graph.edges = demo.edges;
+      graph.groups = demo.groups;
+      graph.settings = { ...DEFAULT_SETTINGS, ...demo.settings };
+      await writeGraphData('demo', graph);
+    } else if (saved && saved.nodes && saved.nodes.length > 0) {
+      graph.nodes = saved.nodes;
+      graph.edges = saved.edges || [];
+      graph.groups = saved.groups || [];
+      if (saved.settings) graph.settings = saved.settings;
+    } else {
+      graph.nodes = [];
+      graph.edges = [];
+      graph.groups = [];
+      graph.settings = saved?.settings || { ...DEFAULT_SETTINGS };
+    }
+    if (graph.settings) {
+      const s = graph.settings;
+      linkDist = s.linkDist; labelSize = s.labelSize; charge = s.charge; linkStr = s.linkStr;
+      collideR = s.collideR; centerS = s.centerS; groupBound = s.groupBound;
+      heatingTime = s.heatingTime; alphaTarget = s.alphaTarget;
+      editPanelOpacity = s.editPanelOpacity; useRAFL = s.useRAFL;
+      nodeExpand = s.nodeExpand; lineExpand = s.lineExpand;
+      showGLabels = s.showGLabels; glMin = s.glMin; glMax = s.glMax;
+      gridVis = s.gridVis; axisVis = s.axisVis; axisTicks = s.axisTicks;
+      gridSp = s.gridSp; gridWidth = s.gridWidth ?? 0.5; ar = s.ar; graphTheme = s.graphTheme || 'default';
+      focusMode = s.focusMode ?? false;
+      fluidAppearance = s.fluidAppearance ?? false;
+      glowAppearance = s.glowAppearance ?? false;
+      gravityGrid = s.gravityGrid ?? false;
+    }
+    sharedState.setFocusModeFn(() => focusMode);
+    applyTheme(getTheme(graphTheme));
+    // 若不在布局模式，清除可能残留的固定和布局标记（防脏数据）
+    if (activeMode === 'default') {
+      for (const n of graph.nodes) { n.fixed = false; n.fx = null; n.fy = null; delete (n as any)._pieColors; }
+      for (const e of graph.edges) { delete (e as any)._conflict; }
+      (graph as any)._categoryBoxes = null;
+    }
+    clearEd(); simManager.initSim();
+    updateInfoRef.current();
+    setTimeout(() => draw(), 100);
+  }
+
+  async function openTab(fileName: string) {
+    if (activeTab !== fileName) {
+      graph.settings = collectSettings();
+      await writeGraphData(activeTab, graph);
+    }
+    if (!openTabs.includes(fileName)) openTabs.push(fileName);
+    activeTab = fileName;
+    await loadGraphData(fileName);
+    try { loadLayouts(); renderModeBar(); } catch {}
+    renderTabs(openTabs, activeTab);
+    persistTabs();
+  }
+
+  async function switchTab(fileName: string) {
+    if (fileName === activeTab) return;
+    graph.settings = collectSettings();
+    await writeGraphData(activeTab, graph);
+    activeTab = fileName;
+    await loadGraphData(fileName);
+    try { loadLayouts(); renderModeBar(); } catch {}
+    renderTabs(openTabs, activeTab);
+    persistTabs();
+  }
+
+  async function closeTab(fileName: string) {
+    if (openTabs.length <= 1) return;
+    graph.settings = collectSettings();
+    await writeGraphData(fileName, graph);
+    openTabs = openTabs.filter(t => t !== fileName);
+    if (fileName === activeTab) {
+      activeTab = openTabs[openTabs.length - 1];
+      await loadGraphData(activeTab);
+    }
+    renderTabs(openTabs, activeTab);
+    persistTabs();
+  }
+
+  async function createNewTab() {
+    const name = prompt('输入新页面名称:');
+    if (!name) return;
+    const fileName = name.endsWith('.json') ? name : name + '.json';
+    if (openTabs.includes(fileName)) { await switchTab(fileName); return; }
+    const empty: GraphData = { nodes: [], edges: [], groups: [], settings: { ...DEFAULT_SETTINGS } };
+    await writeGraphData(fileName, empty);
+    graph.nodes = []; graph.edges = []; graph.groups = [];
+    graph.settings = { ...DEFAULT_SETTINGS };
+    openTabs.push(fileName);
+    activeTab = fileName;
+    await loadGraphData(fileName);
+    renderTabs(openTabs, activeTab);
+    persistTabs();
+  }
+
+  // ===== 状态变量 =====
+  let graph: GraphData = { nodes: [], edges: [], groups: [] };
+  let linkDist = DEFAULT_SETTINGS.linkDist, labelSize = DEFAULT_SETTINGS.labelSize,
+      charge = DEFAULT_SETTINGS.charge, linkStr = DEFAULT_SETTINGS.linkStr,
+      collideR = DEFAULT_SETTINGS.collideR, centerS = DEFAULT_SETTINGS.centerS,
+      groupBound = DEFAULT_SETTINGS.groupBound, heatingTime = DEFAULT_SETTINGS.heatingTime,
+      alphaTarget = DEFAULT_SETTINGS.alphaTarget, editPanelOpacity = DEFAULT_SETTINGS.editPanelOpacity,
+      useRAFL = DEFAULT_SETTINGS.useRAFL, nodeExpand = DEFAULT_SETTINGS.nodeExpand,
+      lineExpand = DEFAULT_SETTINGS.lineExpand, showGLabels = DEFAULT_SETTINGS.showGLabels,
+      glMin = DEFAULT_SETTINGS.glMin, glMax = DEFAULT_SETTINGS.glMax,
+      gridVis = DEFAULT_SETTINGS.gridVis, axisVis = DEFAULT_SETTINGS.axisVis,
+      axisTicks = DEFAULT_SETTINGS.axisTicks, gridSp = DEFAULT_SETTINGS.gridSp,
+      gridWidth = DEFAULT_SETTINGS.gridWidth,
+      ar = DEFAULT_SETTINGS.ar, graphTheme = DEFAULT_SETTINGS.graphTheme,
+      focusMode = DEFAULT_SETTINGS.focusMode, fluidAppearance = DEFAULT_SETTINGS.fluidAppearance, glowAppearance = DEFAULT_SETTINGS.glowAppearance, gravityGrid = DEFAULT_SETTINGS.gravityGrid, categoryLayout = DEFAULT_SETTINGS.categoryLayout;
+
+  let gw = 800, gh = 600;
+  // transform 和 zoom 由 pixi-viewport 管理
+  const getViewportTransform = () => {
+    if (!pixi) return { k: 1, x: 0, y: 0 };
+    const vp = pixi.viewport;
+    return { k: vp.scale.x, x: vp.x, y: vp.y };
+  };
+  const updateGwGh = () => {
+    if (pixi) { gw = pixi.viewport.worldWidth; gh = pixi.viewport.worldHeight; }
+  };
+  let search = '', sField: "name"|"tags"|"note" = "name",
+      sDisplayMode: "highlight"|"show" = "highlight",
+      sMatchMode: "contains"|"startsWith"|"endsWith"|"fuzzy" = "contains";
+  let selNode: string | null = null, selEdge: number | null = null, selGroup: string | null = null;
+  let draggingNode: any = null, wasDragged = false;
+  let linkMode = false, linkSrc: string | null = null;
+  let defArrow = false;
+
+  // --- 存储辅助函数 ---
+  const collectSettings = (): GraphSettings => ({
+    linkDist, labelSize, charge, linkStr, collideR, centerS, groupBound,
+    heatingTime, alphaTarget, editPanelOpacity, useRAFL,
+    nodeExpand, lineExpand, showGLabels, glMin, glMax,
+    gridVis, axisVis, axisTicks, gridSp, gridWidth, gravityGrid, ar, graphTheme, focusMode, fluidAppearance, glowAppearance, categoryLayout,
+  });
+
+  let saveTimeout: any;
+  const scheduleSave = () => {
+    clearTimeout(saveTimeout);
+    saveTimeout = setTimeout(async () => {
+      graph.settings = collectSettings();
+      await writeGraphData(activeTab, graph);
+    }, 300);
+  };
+  (window as any).__triggerSave = () => scheduleSave();
+  (window as any).__graphNodes = graph.nodes;
+
+  const saveNow = async () => {
+    graph.settings = collectSettings();
+    await writeGraphData(activeTab, graph);
+  };
+
+  const isFixedNode = (id: string) => { const n = graph.nodes.find(gn => gn.id === id); return n?.fixed || false; };
+  const fixNode = (id: string) => {
+    const n = graph.nodes.find(gn => gn.id === id);
+    if (n) { n.fixed = true; n.fx = n.x; n.fy = n.y; scheduleSave(); }
+    // 同步到模拟副本（否则样式不会变）
+    const sim = getSim();
+    if (sim) { const sn = sim.nodes().find((sn: any) => sn.id === id); if (sn) { sn.fixed = true; sn.fx = sn.x; sn.fy = sn.y; } }
+    draw();
+  };
+  const fixNodes = (ids: string[]) => { for (const id of ids) fixNode(id); draw(); };
+  const unfixNodes = (ids: string[]) => {
+    const sim = getSim();
+    for (const id of ids) {
+      const n = graph.nodes.find(gn => gn.id === id);
+      if (n) { n.fixed = false; n.fx = null; n.fy = null; }
+      if (sim) { const sn = sim.nodes().find((sn: any) => sn.id === id); if (sn) { sn.fixed = false; sn.fx = null; sn.fy = null; } }
+    }
+    scheduleSave(); draw();
+  };
+
+  // --- 模拟管理器 ---
+  const simManager = createSimManager(
+    graph, () => gw, () => gh,
+    () => linkDist, () => linkStr, () => charge, () => centerS,
+    () => collideR, () => groupBound,
+    () => alphaTarget, () => heatingTime,
+    () => fluidAppearance,
+    () => draw()
+  );
+  const getSim = () => simManager.getSim();
+
+  // --- PixiJS 渲染 ---
+  const nodeSprites = new Map<string, NodeSprite>();
+
+  const themeLabelColor = () => {
+    const t = getTheme(graphTheme);
+    return parseInt(t.labelColor.replace('#', ''), 16);
+  };
+  const themeNodeColor = () => {
+    const t = getTheme(graphTheme);
+    return parseInt(t.nodeDefaultColor.replace('#', ''), 16);
+  };
+
+  const pixiDraw = () => {
+    if (!pixi) return;
+    const sim = getSim();
+    if (!sim) return;
+    const nodes = sim.nodes() || [];
+    const theme = getTheme(graphTheme);
+    const lblColor = parseInt(theme.labelColor.replace('#', ''), 16);
+    const defColor = parseInt(theme.nodeDefaultColor.replace('#', ''), 16);
+
+    // 搜索匹配集
+    const searchMatchIds = new Set<string>();
+    if (search) {
+      for (const n of nodes) {
+        let m = false;
+        if (sField === 'name') m = (n.label || '').toLowerCase().includes(search.toLowerCase());
+        else if (sField === 'tags') m = (n.tags || []).some((t: string) => t.toLowerCase().includes(search.toLowerCase()));
+        else if (sField === 'note') m = (n.note || '').toLowerCase().includes(search.toLowerCase());
+        if (m) searchMatchIds.add(n.id);
+      }
+    }
+
+    // 框选集
+    const boxSelIds = new Set(sharedState.selectedNodeIds);
+
+    // 聚焦邻居集
+    const focusNeighborIds = new Set<string>();
+    let focusActive = false;
+    if (sharedState.focusMode && sharedState.hoverNodeId) {
+      focusActive = true;
+      focusNeighborIds.add(sharedState.hoverNodeId);
+      graph.edges.forEach(e => {
+        const src = typeof e.source === 'object' ? e.source.id : e.source;
+        const tgt = typeof e.target === 'object' ? e.target.id : e.target;
+        if (src === sharedState.hoverNodeId) focusNeighborIds.add(tgt);
+        if (tgt === sharedState.hoverNodeId) focusNeighborIds.add(src);
+      });
+    }
+
+    // --- 光晕/流体模糊层 ---
+    const showBlobs = fluidAppearance || glowAppearance;
+    if (showBlobs) {
+      updateBlobFilters();
+      pixi.blobLayer.visible = true;
+      pixi.blobLayer.removeChildren();
+      const bg = new Graphics();
+      const rMul = fluidAppearance ? 2.5 : 1.8;
+      for (const n of nodes) {
+        const r = (n.radius || 9) * rMul;
+        const colorStr = (n.color && n.color !== '#000000') ? n.color : theme.nodeDefaultColor;
+        const color = parseInt(colorStr.replace('#', ''), 16);
+        bg.circle(n.x, n.y, r).fill({ color, alpha: 0.5 });
+      }
+      pixi.blobLayer.addChild(bg);
+    } else {
+      pixi.blobLayer.visible = false;
+    }
+
+    // --- 节点 ---
+    for (const n of nodes) {
+      const id = n.id;
+      let sprite = nodeSprites.get(id);
+      if (!sprite) {
+        const colorStr = (n.color && n.color !== '#000000') ? n.color : theme.nodeDefaultColor;
+        const color = parseInt(colorStr.replace('#', ''), 16);
+        sprite = createNodeSprite(id, n.label || id, n.x, n.y, n.radius || 9, color, lblColor, labelSize);
+        pixi.nodeLayer.addChild(sprite.container);
+        nodeSprites.set(id, sprite);
+      } else {
+        updateNodePosition(sprite, n.x, n.y);
+      }
+
+      // 缩放 > 0.3 才显示标签
+      sprite.radius = n.radius || 9;
+	      sprite.label.visible = pixi.viewport.scale.x > 0.4;
+
+      // 组颜色
+      const tags: string[] = n.tags || [];
+      const matchingGroups = (graph.groups || []).filter((g: any) => g.displayMode !== 'none' && g.nodeColorMode && g.nodeColorMode !== 'off' && tags.includes(g.label));
+      let gColor: number | undefined;
+      let gEdgeOnly = false;
+      if (matchingGroups.length === 1) {
+        const gc = matchingGroups[0].nodeColor || matchingGroups[0].color;
+        gColor = parseInt((gc || '#5B8FF9').replace('#', ''), 16);
+        gEdgeOnly = matchingGroups[0].nodeColorMode === 'edge';
+      }
+
+      const colorStr = (n.color && n.color !== '#000000') ? n.color : theme.nodeDefaultColor;
+      const baseColor = parseInt(colorStr.replace('#', ''), 16);
+
+      // 冲突节点饼状颜色
+      const pieStrColors: string[] | undefined = (n as any)._pieColors;
+      const pieColors: number[] | undefined = pieStrColors?.map(c => parseInt(c.replace('#', ''), 16));
+
+      applyNodeVisual(sprite, baseColor, lblColor, labelSize, {
+        selected: n.id === selNode,
+        boxSelected: boxSelIds.has(id),
+        searchMatch: searchMatchIds.has(id),
+        fixed: n.fixed || false,
+        collapsed: false,
+        inFocus: !focusActive || focusNeighborIds.has(id),
+        groupColor: gColor,
+        groupEdgeOnly: gEdgeOnly,
+        fluidMode: fluidAppearance,
+        pieColors,
+        mediaType: n.mediaType || undefined,
+        mediaExpanded: isExpanded(n.id),
+      });
+    }
+
+    // 移除不存在的节点
+    const aliveIds = new Set(nodes.map((n: any) => n.id));
+    for (const [id, sprite] of nodeSprites) {
+      if (!aliveIds.has(id)) {
+        pixi.nodeLayer.removeChild(sprite.container);
+        nodeSprites.delete(id);
+      }
+    }
+
+    // 边、集合、网格
+    updateEdges(pixi.edgeLayer, graph, nodes, {
+      hiddenNodes: new Set(),
+      focusNeighborIds: focusActive ? focusNeighborIds : undefined,
+    });
+    // 分类布局矩形框
+    if ((activeMode === 'category' || activeMode === 'fullcat') && (graph as any)._categoryBoxes) {
+      const boxes = (graph as any)._categoryBoxes;
+      if (!(pixi.groupLayer as any)._catGfx) {
+        (pixi.groupLayer as any)._catGfx = new Graphics();
+        pixi.groupLayer.addChild((pixi.groupLayer as any)._catGfx);
+      }
+      const cg = (pixi.groupLayer as any)._catGfx as Graphics;
+      cg.clear();
+      for (const b of boxes) {
+        cg.rect(b.x, b.y, b.w, b.h)
+          .fill({ color: parseInt(b.color.replace('#', ''), 16), alpha: 0.08 })
+          .stroke({ color: parseInt(b.color.replace('#', ''), 16), width: 2, alpha: 0.4 });
+        // 标签
+        if (!cg.parent) pixi.groupLayer.addChild(cg);
+      }
+    } else {
+      const cg = (pixi.groupLayer as any)._catGfx;
+      if (cg) { cg.clear(); pixi.groupLayer.removeChild(cg); (pixi.groupLayer as any)._catGfx = null; }
+      updateGroups(pixi.groupLayer, graph, nodes, showGLabels, glMin, glMax);
+    }
+    // 多媒体覆盖层：跟随节点 + 缩放
+    for (const n of nodes) {
+      if (n.mediaType && isExpanded(n.id)) {
+        const vp = pixi.viewport;
+        const scale = vp.scale.x;
+        const sp = vp.toScreen(n.x, n.y);
+        const rect = pixi.app.canvas.getBoundingClientRect();
+        positionMedia(n.id, () => ({ x: rect.left + sp.x, y: rect.top + sp.y }));
+        const ov = document.querySelector(`[data-media-id="${n.id}"]`) as HTMLElement;
+        if (ov) ov.style.transform = `scale(${scale})`;
+      }
+    }
+    updateGwGh();
+    // 网格用 canvas 实际 CSS 尺寸
+    const cw = pixi.app.canvas.clientWidth;
+    const ch = pixi.app.canvas.clientHeight;
+    updateGrid(pixi.gridLayer, cw, ch, {
+      gridVis, axisVis, axisTicks, gridSp, gridWidth, gravityGrid,
+      nodes,
+      transform: getViewportTransform(),
+    });
+  };
+
+  sharedState.directDraw = () => pixiDraw();
+  let drawPending = false;
+  const rafDraw = () => { if (!drawPending) { drawPending = true; requestAnimationFrame(() => { drawPending = false; pixiDraw(); }); } };
+  const draw = () => { if (useRAFL) rafDraw(); else pixiDraw(); };
+
+  // --- 编辑面板 ---
+  const updateInfoRef = { current: () => {} };
+  const updateSelectsRef = { current: () => {} };
+  const editCtx = createEditPanel(appShell, {
+    graph,
+    getSelNode: () => selNode, setSelNode: v => { selNode = v; },
+    getSelEdge: () => selEdge, setSelEdge: v => { selEdge = v; },
+    getSelGroup: () => selGroup, setSelGroup: v => { selGroup = v; },
+    getLinkMode: () => linkMode, setLinkMode: v => { linkMode = v; },
+    setLinkSrc: v => { linkSrc = v; },
+    getSaveData: () => saveNow,
+    getInitSim: () => simManager.initSim,
+    getUpdateInfo: () => updateInfoRef.current,
+    getUpdateSelects: () => updateSelectsRef.current,
+    draw,
+    triggerSave: () => scheduleSave(),
+    getSimulation: getSim,
+  }, () => editPanelOpacity);
+  const { fillNode, fillEdge, fillGroup, clearEd, updateOpacity } = editCtx;
+
+  // --- 设置面板 ---
+  const settingsUI = buildSettings(setDiv, {
+    getLinkDist: () => linkDist, setLinkDist: v => { linkDist = v; },
+    getLabelSize: () => labelSize, setLabelSize: v => { labelSize = v; },
+    getCharge: () => charge, setCharge: v => { charge = v; },
+    getLinkStr: () => linkStr, setLinkStr: v => { linkStr = v; },
+    getCollideR: () => collideR, setCollideR: v => { collideR = v; },
+    getCenterS: () => centerS, setCenterS: v => { centerS = v; },
+    getGroupBound: () => groupBound, setGroupBound: v => { groupBound = v; },
+    getHeatingTime: () => heatingTime, setHeatingTime: v => { heatingTime = v; },
+    getAlphaTarget: () => alphaTarget, setAlphaTarget: v => { alphaTarget = v; },
+    getEditPanelOpacity: () => editPanelOpacity, setEditPanelOpacity: v => { editPanelOpacity = v; updateOpacity(v); },
+    getUseRAFL: () => useRAFL, setUseRAFL: v => { useRAFL = v; },
+    getNodeExpand: () => nodeExpand, setNodeExpand: v => { nodeExpand = v; },
+    getLineExpand: () => lineExpand, setLineExpand: v => { lineExpand = v; },
+    getShowGLabels: () => showGLabels, setShowGLabels: v => { showGLabels = v; },
+    getGlMin: () => glMin, setGlMin: v => { glMin = v; },
+    getGlMax: () => glMax, setGlMax: v => { glMax = v; },
+    getGridVis: () => gridVis, setGridVis: v => { gridVis = v; },
+    getAxisVis: () => axisVis, setAxisVis: v => { axisVis = v; },
+    getAxisTicks: () => axisTicks, setAxisTicks: v => { axisTicks = v; },
+    getGridSp: () => gridSp, setGridSp: v => { gridSp = v; },
+    getAr: () => ar, setAr: v => { ar = v; if (pixi) { pixi.app.renderer.resize(pixi.app.canvas.width, Math.max(300, pixi.app.canvas.width * ar)); updateGwGh(); simManager.updateCenter(); draw(); } },
+    getSimulation: getSim, getGw: () => gw, getGh: () => gh,
+    draw, getInitSim: () => simManager.initSim, getSaveData: () => saveNow, graph,
+    getGraphTheme: () => graphTheme,
+    setGraphTheme: v => { graphTheme = v; applyTheme(getTheme(v)); saveNow(); draw(); },
+    getDefaultValues: () => ({
+      defaultLinkDistance: DEFAULT_SETTINGS.linkDist, defaultFontSize: DEFAULT_SETTINGS.labelSize,
+      defaultCharge: DEFAULT_SETTINGS.charge, defaultLinkStrength: DEFAULT_SETTINGS.linkStr,
+      defaultCollideRadius: DEFAULT_SETTINGS.collideR, defaultCenterStrength: DEFAULT_SETTINGS.centerS,
+      defaultGroupBound: DEFAULT_SETTINGS.groupBound, defaultHeatingTime: DEFAULT_SETTINGS.heatingTime,
+      defaultAlphaTarget: DEFAULT_SETTINGS.alphaTarget, defaultEditPanelOpacity: DEFAULT_SETTINGS.editPanelOpacity,
+      defaultUseRAFL: DEFAULT_SETTINGS.useRAFL, defaultFocusMode: DEFAULT_SETTINGS.focusMode,
+      defaultFluidAppearance: DEFAULT_SETTINGS.fluidAppearance,
+      defaultGlowAppearance: DEFAULT_SETTINGS.glowAppearance,
+      defaultGravityGrid: DEFAULT_SETTINGS.gravityGrid,
+      defaultGridWidth: DEFAULT_SETTINGS.gridWidth,
+      defaultNodeExpand: DEFAULT_SETTINGS.nodeExpand, defaultLineExpand: DEFAULT_SETTINGS.lineExpand,
+      defaultShowGLabels: DEFAULT_SETTINGS.showGLabels, defaultGlMin: DEFAULT_SETTINGS.glMin,
+      defaultGlMax: DEFAULT_SETTINGS.glMax, defaultGridVis: DEFAULT_SETTINGS.gridVis,
+      defaultAxisVis: DEFAULT_SETTINGS.axisVis, defaultAxisTicks: DEFAULT_SETTINGS.axisTicks,
+      defaultGridSpacing: DEFAULT_SETTINGS.gridSp, defaultAr: DEFAULT_SETTINGS.ar,
+      defaultGraphTheme: DEFAULT_SETTINGS.graphTheme,
+    }),
+    getFocusMode: () => focusMode, setFocusMode: v => { focusMode = v; },
+    getFluidAppearance: () => fluidAppearance, setFluidAppearance: v => { fluidAppearance = v; draw(); },
+    getGlowAppearance: () => glowAppearance, setGlowAppearance: v => { glowAppearance = v; draw(); },
+    getGravityGrid: () => gravityGrid, setGravityGrid: v => { gravityGrid = v; draw(); },
+    getGridWidth: () => gridWidth, setGridWidth: v => { gridWidth = v; },
+  });
+  updateInfoRef.current = settingsUI.updateInfo;
+  updateSelectsRef.current = () => {};
+
+  // --- 搜索事件 ---
+  let lastSearchTerm = '';
+  let searchMatchIndex = 0;
+  fieldSelect.addEventListener('change', () => { sField = fieldSelect.value as any; draw(); });
+  matchModeSelect.addEventListener('change', () => { sMatchMode = matchModeSelect.value as any; draw(); });
+  modeSelect.addEventListener('change', () => { sDisplayMode = modeSelect.value as any; draw(); });
+  searchInput.addEventListener('input', () => { search = searchInput.value; draw(); });
+  searchInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      const nodes = getSim()?.nodes() || [];
+      const matching = nodes.filter((n: any) => {
+        if (!search) return false;
+        switch (sField) {
+          case 'name': return (n.label || '').toLowerCase().includes(search.toLowerCase());
+          case 'tags': return (n.tags || []).some((t: string) => t.toLowerCase().includes(search.toLowerCase()));
+          case 'note': return (n.note || '').toLowerCase().includes(search.toLowerCase());
+          default: return false;
+        }
+      });
+      if (search !== lastSearchTerm) { searchMatchIndex = 0; lastSearchTerm = search; }
+      else { searchMatchIndex = (searchMatchIndex + 1) % (matching.length || 1); }
+      if (matching.length > 0 && pixi) {
+        const node = matching[searchMatchIndex];
+        pixi.viewport.moveCenter(node.x, node.y);
+        fillNode(node.id);
+      }
+    }
+  });
+
+  // --- 操作按钮 ---
+  const addBtn = document.createElement('button');
+  addBtn.textContent = '新建节点'; addBtn.style.cssText = 'font-size:0.85em;padding:2px 8px;cursor:pointer;';
+  addBtn.onclick = () => {
+    const center = pixi?.viewport?.center ?? { x: gw / 2, y: gh / 2 };
+    const cx = center.x, cy = center.y;
+    const newNode = { id: 'n_' + Date.now(), label: '新节点', radius: 12, headingLevel: 6, tags: [], color: '#5B8FF9', x: cx, y: cy };
+    graph.nodes.push(newNode); scheduleSave(); simManager.initSim(); fillNode(newNode.id);
+  };
+  controlsDiv.appendChild(addBtn);
+  const linkBtn = document.createElement('button');
+  linkBtn.textContent = '连线模式'; linkBtn.style.cssText = 'font-size:0.85em;padding:2px 8px;cursor:pointer;';
+  linkBtn.onclick = () => { linkMode = !linkMode; linkBtn.style.background = linkMode ? '#5B8FF9' : ''; linkBtn.style.color = linkMode ? '#fff' : ''; if (linkMode) linkSrc = null; };
+  controlsDiv.appendChild(linkBtn);
+  const refreshBtn = document.createElement('button');
+  refreshBtn.textContent = '刷新'; refreshBtn.style.cssText = 'font-size:0.85em;padding:2px 8px;cursor:pointer;';
+  refreshBtn.onclick = async () => {
+    if (activeMode === 'tree') { applyTreeLayout(); return; }
+    if (activeMode === 'category') { applyCategoryLayout(false); return; }
+    if (activeMode === 'fullcat') { applyCategoryLayout(true); return; }
+    // demo 数据始终从 DEMO_DATA 重新加载（开发调试用）
+    if (activeTab === 'demo') {
+      const demo = JSON.parse(JSON.stringify(DEMO_DATA));
+      graph.nodes = demo.nodes; graph.edges = demo.edges; graph.groups = demo.groups;
+      graph.settings = demo.settings || graph.settings;
+      await writeGraphData('demo', graph);
+    } else {
+      const saved = await readGraphData(activeTab);
+      if (saved) { graph.nodes = saved.nodes; graph.edges = saved.edges || []; graph.groups = saved.groups || []; }
+    }
+    simManager.initSim(); draw();
+  };
+  controlsDiv.appendChild(refreshBtn);
+
+  // --- 布局切换时保存/恢复固定节点 ---
+  let savedFixedNodes: { id: string; x: number; y: number; fx: number | null; fy: number | null; fixed: boolean }[] = [];
+  let savedGroupModes: { id: string; mode: string; nodeColorMode: string; nodeColor: string }[] = [];
+  const saveFixedState = () => {
+    savedFixedNodes = graph.nodes.map(n => ({ id: n.id, x: n.x, y: n.y, fx: n.fx, fy: n.fy, fixed: n.fixed || false }));
+    savedGroupModes = graph.groups.map(g => ({ id: g.id, mode: g.displayMode, nodeColorMode: g.nodeColorMode || 'off', nodeColor: g.nodeColor || g.color || '#5B8FF9' }));
+  };
+  const restoreFixedState = () => {
+    for (const s of savedFixedNodes) {
+      const n = graph.nodes.find(n => n.id === s.id);
+      if (n) { n.x = s.x; n.y = s.y; n.fx = s.fx; n.fy = s.fy; n.fixed = s.fixed; }
+    }
+    for (const gs of savedGroupModes) {
+      const g = graph.groups.find(g => g.id === gs.id);
+      if (g) { g.displayMode = gs.mode as any; g.nodeColorMode = gs.nodeColorMode as any; g.nodeColor = gs.nodeColor; }
+    }
+  };
+
+  // --- 树形布局 ---
+  let treeMode = false;
+  const treeBtn = document.createElement('button');
+  treeBtn.textContent = '树形'; treeBtn.style.cssText = 'font-size:0.85em;padding:2px 8px;cursor:pointer;';
+  treeBtn.onclick = () => {
+    if (categoryMode || fullCatMode) { saveFixedState(); }
+    treeMode = !treeMode;
+    treeBtn.style.background = treeMode ? '#5B8FF9' : '';
+    treeBtn.style.color = treeMode ? '#fff' : '';
+    if (fullCatMode) { fullCatBtn.click(); }
+    if (categoryMode) { categoryMode = false; catBtn.style.background = ''; catBtn.style.color = ''; (graph as any)._categoryBoxes = null; }
+    if (treeMode) {
+      saveFixedState();
+      for (const n of graph.nodes) { n.fixed = false; n.fx = null; n.fy = null; }
+      for (const e of graph.edges) { delete (e as any)._conflict; }
+      applyTreeLayout();
+    }
+    else {
+      restoreFixedState();
+      // 取消树形：缓动回自由力布局
+      for (const n of graph.nodes) { n.fixed = false; n.fx = null; n.fy = null; (n as any)._sx = n.x; (n as any)._sy = n.y; }
+      for (const e of graph.edges) { delete (e as any)._conflict; }
+      simManager.initSim();
+      // 动画混合：前 90 帧从旧位置插值到模拟位置
+      let backFrame = 0;
+      const backTotal = 90;
+      const animBack = () => {
+        backFrame++;
+        const t = Math.min(1, backFrame / backTotal);
+        const ease = t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+        const simNodes = simManager.getSim()?.nodes() || [];
+        for (const n of graph.nodes) {
+          const sx = (n as any)._sx, sy = (n as any)._sy;
+          if (sx == null) continue;
+          const sn = simNodes.find((s: any) => s.id === n.id);
+          if (!sn) continue;
+          const tx = sn.x, ty = sn.y;
+          n.x = sx + (tx - sx) * ease;
+          n.y = sy + (ty - sy) * ease;
+          sn.x = n.x; sn.y = n.y;
+          if (backFrame >= backTotal) { sn.fx = null; sn.fy = null; }
+        }
+        draw();
+        if (backFrame < backTotal) requestAnimationFrame(animBack);
+      };
+      requestAnimationFrame(animBack);
+    }
+  };
+  // (treeBtn removed — now in mode bar)
+
+  // 树形布局逻辑
+  const applyTreeLayout = () => {
+    const nodes = graph.nodes;
+    const edges = graph.edges;
+    if (nodes.length === 0) return;
+    // 找根：headingLevel=1 或半径最大
+    let root = nodes.find((n: any) => n.headingLevel === 1) || nodes.reduce((a: any, b: any) => (b.radius || 9) > (a.radius || 9) ? b : a);
+    const rootId = root.id;
+    // BFS 建树（所有边都参与遍历，包括虚线）
+    const children = new Map<string, string[]>();
+    const parent = new Map<string, string>();
+    const visited = new Set<string>([rootId]);
+    const queue = [rootId];
+    while (queue.length > 0) {
+      const pid = queue.shift()!;
+      if (!children.has(pid)) children.set(pid, []);
+      for (const e of edges) {
+        const src = typeof e.source === 'object' ? e.source.id : e.source;
+        const tgt = typeof e.target === 'object' ? e.target.id : e.target;
+        let childId: string | null = null;
+        if (src === pid && !visited.has(tgt)) childId = tgt;
+        else if (tgt === pid && !visited.has(src)) childId = src;
+        if (childId) {
+          visited.add(childId);
+          parent.set(childId, pid);
+          children.get(pid)!.push(childId);
+          queue.push(childId);
+        }
+      }
+    }
+    // 标记冲突边：只标记不在树中的边，用户自设虚线不算冲突
+    for (const e of edges) {
+      delete (e as any)._conflict;
+      const src = typeof e.source === 'object' ? e.source.id : e.source;
+      const tgt = typeof e.target === 'object' ? e.target.id : e.target;
+      const isParent = parent.get(src) === tgt || parent.get(tgt) === src;
+      if (!isParent) {
+        (e as any)._conflict = true;
+      }
+    }
+    // 计算子树的叶节点数（决定宽度）
+    const leafCount = new Map<string, number>();
+    const calcLeaves = (id: string): number => {
+      const kids = children.get(id) || [];
+      if (kids.length === 0) { leafCount.set(id, 1); return 1; }
+      let sum = 0;
+      for (const cid of kids) sum += calcLeaves(cid);
+      leafCount.set(id, Math.max(sum, 1));
+      return leafCount.get(id)!;
+    };
+    calcLeaves(rootId);
+
+    const levelY = 100;
+    const unitX = 110; // 每个叶节点占据的宽度
+    const levels = new Map<string, number>();
+    const posX = new Map<string, number>();
+
+    const layoutTree = (id: string, depth: number, leftBound: number) => {
+      levels.set(id, depth);
+      const kids = children.get(id) || [];
+      if (kids.length === 0) {
+        posX.set(id, leftBound);
+        return;
+      }
+      // 每个子树居中于其叶节点范围
+      let cursor = leftBound;
+      const kidPositions: number[] = [];
+      for (const cid of kids) {
+        const w = leafCount.get(cid) || 1;
+        layoutTree(cid, depth + 1, cursor);
+        const center = cursor + (w - 1) * unitX / 2;
+        kidPositions.push(center);
+        cursor += w * unitX;
+      }
+      // 父节点居中于子节点
+      posX.set(id, (kidPositions[0] + kidPositions[kidPositions.length - 1]) / 2);
+    };
+    layoutTree(rootId, 0, 0);
+
+    // 孤立节点
+    let maxLv = 0;
+    for (const [id, lv] of levels) { if (lv > maxLv) maxLv = lv; }
+    for (const n of nodes) {
+      if (!visited.has(n.id)) {
+        levels.set(n.id, maxLv + 1);
+        posX.set(n.id, (children.get(rootId)?.length || 0) * unitX);
+        children.get(rootId)!.push(n.id);
+      }
+    }
+    // 居中整个树：找到最左和最右
+    let minX = Infinity, maxX = -Infinity;
+    for (const [id, x] of posX) { if (x < minX) minX = x; if (x > maxX) maxX = x; }
+    const offsetX = -(minX + maxX) / 2;
+    // 存储目标位置，由动画逐帧过渡
+    for (const n of nodes) {
+      (n as any)._treeX = (posX.get(n.id) ?? 0) + offsetX;
+      (n as any)._treeY = (levels.get(n.id) ?? 0) * levelY;
+    }
+    // RAF 动画平滑过渡到目标树位置
+    const simNodes = simManager.getSim()?.nodes() || [];
+    for (const n of graph.nodes) {
+      if ((n as any)._treeX != null) {
+        // 从模拟节点读当前位置（不在树上时可能已漂移）
+        const sn = simNodes.find((s: any) => s.id === n.id);
+        (n as any)._sx = sn ? sn.x : n.x;
+        (n as any)._sy = sn ? sn.y : n.y;
+      }
+    }
+    simManager.getSim()?.stop();
+    let animFrame = 0;
+    const animTotal = 90;
+    const animateTree = () => {
+      animFrame++;
+      const t = Math.min(1, animFrame / animTotal);
+      const ease = t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+      for (const n of graph.nodes) {
+        const tx = (n as any)._treeX, ty = (n as any)._treeY;
+        if (tx == null) continue;
+        const sx = (n as any)._sx, sy = (n as any)._sy;
+        n.x = sx + (tx - sx) * ease;
+        n.y = sy + (ty - sy) * ease;
+        n.fx = n.x; n.fy = n.y;
+        if (simNodes.length) {
+          const sn = simNodes.find((s: any) => s.id === n.id);
+          if (sn) { sn.x = n.x; sn.y = n.y; sn.fx = n.x; sn.fy = n.y; }
+        }
+        if (animFrame >= animTotal) { n.fixed = true; }
+      }
+      draw();
+      if (animFrame < animTotal) requestAnimationFrame(animateTree);
+      else simManager.initSim();
+    };
+    requestAnimationFrame(animateTree);
+  };
+
+  // --- 逆时针旋转 90°（变换节点坐标）---
+  const rotBtn = document.createElement('button');
+  rotBtn.textContent = '旋转'; rotBtn.style.cssText = 'font-size:0.85em;padding:2px 8px;cursor:pointer;';
+  rotBtn.onclick = () => {
+    // 所有节点绕原点 (0,0) 逆时针旋转 90°：(x,y) → (y, -x)
+    for (const n of graph.nodes) {
+      const oldX = n.x, oldY = n.y;
+      n.x = oldY;
+      n.y = -oldX;
+      if (n.fx != null) { n.fx = oldY; n.fy = -oldX; }
+    }
+    scheduleSave();
+    if (treeMode) {
+      // 树模式：旋转后更新目标位置并重新缓动
+      for (const n of graph.nodes) {
+        n.fixed = false; n.fx = null; n.fy = null;
+        if ((n as any)._treeX != null) {
+          const tx = (n as any)._treeX, ty = (n as any)._treeY;
+          (n as any)._treeX = ty;
+          (n as any)._treeY = -tx;
+        }
+      }
+      // 重新启动缓动到旋转后的目标
+      const simNodes = simManager.getSim()?.nodes() || [];
+      for (const n of graph.nodes) {
+        if ((n as any)._treeX != null) {
+          const sn = simNodes.find((s: any) => s.id === n.id);
+          (n as any)._sx = sn ? sn.x : n.x;
+          (n as any)._sy = sn ? sn.y : n.y;
+        }
+      }
+      simManager.getSim()?.stop();
+      let rotFrame = 0;
+      const rotTotal = 90;
+      const animRot = () => {
+        rotFrame++;
+        const t = Math.min(1, rotFrame / rotTotal);
+        const ease = t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+        const sns = simManager.getSim()?.nodes() || [];
+        for (const n of graph.nodes) {
+          const tx = (n as any)._treeX, ty = (n as any)._treeY;
+          if (tx == null) continue;
+          const sx = (n as any)._sx, sy = (n as any)._sy;
+          n.x = sx + (tx - sx) * ease;
+          n.y = sy + (ty - sy) * ease;
+          n.fx = n.x; n.fy = n.y;
+          const sn = sns.find((s: any) => s.id === n.id);
+          if (sn) { sn.x = n.x; sn.y = n.y; sn.fx = n.x; sn.fy = n.y; }
+          if (rotFrame >= rotTotal) { n.fixed = true; }
+        }
+        draw();
+        if (rotFrame < rotTotal) requestAnimationFrame(animRot);
+        else simManager.initSim();
+      };
+      requestAnimationFrame(animRot);
+    }
+    else { simManager.initSim(); draw(); }
+  };
+  controlsDiv.appendChild(rotBtn);
+
+  // 导入文件按钮
+  const importBtn = document.createElement('button');
+  importBtn.textContent = '导入'; importBtn.style.cssText = 'font-size:0.85em;padding:2px 8px;cursor:pointer;';
+  importBtn.onclick = async () => {
+    // Electron 模式：原生文件对话框，直接存路径
+    const ea = (window as any).electronAPI;
+    if (ea?.openFile) {
+      const filePath = await ea.openFile();
+      if (!filePath) return;
+      const name = filePath.split(/[\\/]/).pop() || 'file';
+      let mediaType = 'md';
+      if (/\.(png|jpg|jpeg|gif|webp|svg|bmp)$/i.test(name)) mediaType = 'image';
+      else if (/\.(mp3|wav|ogg|flac|aac|m4a)$/i.test(name)) mediaType = 'audio';
+      else if (/\.(mp4|webm|mov|avi|mkv)$/i.test(name)) mediaType = 'video';
+      const id = 'n_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
+      graph.nodes.push({ id, label: name, radius: 11, headingLevel: 4, tags: [], color: '#5B8FF9',
+        x: Math.random() * 200 - 100, y: Math.random() * 200 - 100,
+        mediaType, mediaUrl: filePath });
+      scheduleSave(); simManager.initSim(); draw();
+      return;
+    }
+    // 浏览器模式：blob URL
+    const inp = document.createElement('input');
+    inp.type = 'file'; inp.multiple = true;
+    inp.onchange = () => {
+      const files = inp.files;
+      if (!files || !pixi) return;
+      for (const file of Array.from(files)) {
+        let mediaType = 'md';
+        if (/\.(png|jpg|jpeg|gif|webp|svg|bmp)$/i.test(file.name)) mediaType = 'image';
+        else if (/\.(mp3|wav|ogg|flac|aac|m4a)$/i.test(file.name)) mediaType = 'audio';
+        else if (/\.(mp4|webm|mov|avi|mkv)$/i.test(file.name)) mediaType = 'video';
+        const id = 'n_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
+        graph.nodes.push({ id, label: file.name, radius: 11, headingLevel: 4, tags: [], color: '#5B8FF9',
+          x: Math.random() * 200 - 100, y: Math.random() * 200 - 100,
+          mediaType, mediaUrl: URL.createObjectURL(file) });
+      }
+      scheduleSave(); simManager.initSim(); draw();
+    };
+    inp.click();
+  };
+  controlsDiv.appendChild(importBtn);
+
+  // --- 分类布局 ---
+  let categoryMode = false;
+  const catBtn = document.createElement('button');
+  catBtn.textContent = '分类'; catBtn.style.cssText = 'font-size:0.85em;padding:2px 8px;cursor:pointer;';
+  catBtn.onclick = () => {
+    categoryMode = !categoryMode;
+    catBtn.style.background = categoryMode ? '#5B8FF9' : '';
+    catBtn.style.color = categoryMode ? '#fff' : '';
+    if (categoryMode) {
+      saveFixedState();
+      if (treeMode) { treeMode = false; treeBtn.style.background = ''; treeBtn.style.color = ''; for (const n of graph.nodes) { n.fixed = false; n.fx = null; n.fy = null; } }
+      if (fullCatMode) { fullCatBtn.click(); }
+      pixi!.groupLayer.removeChildren();
+      applyCategoryLayout();
+    } else {
+      restoreFixedState();
+      // 缓动退出
+      categoryMode = false; // 立即停止渲染框
+      for (const n of graph.nodes) { n.fixed = false; n.fx = null; n.fy = null; (n as any)._sx = n.x; (n as any)._sy = n.y; }
+      (graph as any)._categoryBoxes = null;
+      delete (graph as any)._categoryBoxes;
+      simManager.initSim();
+      let backFrame = 0; const backTotal = 90;
+      const animBack = () => {
+        backFrame++;
+        const t = Math.min(1, backFrame / backTotal);
+        const ease = t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+        const sns = simManager.getSim()?.nodes() || [];
+        for (const n of graph.nodes) {
+          const sx = (n as any)._sx, sy = (n as any)._sy;
+          if (sx == null) continue;
+          const sn = sns.find((s: any) => s.id === n.id);
+          if (!sn) continue;
+          n.x = sx + (sn.x - sx) * ease;
+          n.y = sy + (sn.y - sy) * ease;
+          sn.x = n.x; sn.y = n.y;
+          if (backFrame >= backTotal) { sn.fx = null; sn.fy = null; }
+        }
+        draw();
+        if (backFrame < backTotal) requestAnimationFrame(animBack);
+      };
+      requestAnimationFrame(animBack);
+    }
+  };
+  // (catBtn removed — now in mode bar)
+
+  // --- 全分类布局 ---
+  let fullCatMode = false;
+  const fullCatBtn = document.createElement('button');
+  fullCatBtn.textContent = '全分类'; fullCatBtn.style.cssText = 'font-size:0.85em;padding:2px 8px;cursor:pointer;';
+  let fullCatSavedModes: { id: string; mode: string }[] = [];
+  fullCatBtn.onclick = () => {
+    fullCatMode = !fullCatMode;
+    fullCatBtn.style.background = fullCatMode ? '#5B8FF9' : '';
+    fullCatBtn.style.color = fullCatMode ? '#fff' : '';
+    if (fullCatMode) {
+      if (treeMode) { treeMode = false; treeBtn.style.background = ''; treeBtn.style.color = ''; for (const n of graph.nodes) { n.fixed = false; n.fx = null; n.fy = null; } }
+      if (categoryMode) { categoryMode = false; catBtn.style.background = ''; catBtn.style.color = ''; }
+      pixi!.groupLayer.removeChildren();
+      (graph as any)._categoryBoxes = null;
+      // 临时启用所有集合
+      fullCatSavedModes = graph.groups.map(g => ({ id: g.id, mode: g.displayMode }));
+      for (const g of graph.groups) { if (g.displayMode === 'none') g.displayMode = 'rect'; }
+      applyCategoryLayout(true);
+    } else {
+      // 恢复集合显示状态
+      for (const g of graph.groups) {
+        const saved = savedGroupModes.find(s => s.id === g.id);
+        if (saved) g.displayMode = saved.mode as any;
+      }
+      categoryMode = false; catBtn.style.background = ''; catBtn.style.color = '';
+      for (const n of graph.nodes) { n.fixed = false; n.fx = null; n.fy = null; (n as any)._sx = n.x; (n as any)._sy = n.y; }
+      (graph as any)._categoryBoxes = null; delete (graph as any)._categoryBoxes;
+      simManager.initSim();
+      let backFrame = 0; const backTotal = 90;
+      const animBack = () => {
+        backFrame++;
+        const t = Math.min(1, backFrame / backTotal);
+        const ease = t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+        const sns = simManager.getSim()?.nodes() || [];
+        for (const n of graph.nodes) {
+          const sx = (n as any)._sx, sy = (n as any)._sy;
+          if (sx == null) continue;
+          const sn = sns.find((s: any) => s.id === n.id);
+          if (!sn) continue;
+          n.x = sx + (sn.x - sx) * ease; n.y = sy + (sn.y - sy) * ease;
+          sn.x = n.x; sn.y = n.y;
+          if (backFrame >= backTotal) { sn.fx = null; sn.fy = null; }
+        }
+        draw();
+        if (backFrame < backTotal) requestAnimationFrame(animBack);
+      };
+      requestAnimationFrame(animBack);
+    }
+  };
+  // (fullCatBtn removed — now in mode bar)
+
+  const applyCategoryLayout = (allGroups = false) => {
+    const nodes = graph.nodes;
+    const groups = allGroups ? graph.groups : graph.groups.filter(g => g.displayMode !== 'none');
+    const groupNodes = new Map<string, any[]>();
+    const conflictNodes: any[] = [];
+    const noGroupNodes: any[] = [];
+    for (const n of nodes) {
+      n.fixed = false; n.fx = null; n.fy = null;
+      const tags: string[] = n.tags || [];
+      const matchGroups = groups.filter(g => tags.includes(g.label));
+      if (matchGroups.length === 0) noGroupNodes.push(n);
+      else if (matchGroups.length === 1) {
+        const gid = matchGroups[0].id;
+        if (!groupNodes.has(gid)) groupNodes.set(gid, []);
+        groupNodes.get(gid)!.push(n);
+      } else conflictNodes.push(n);
+    }
+    const parts: { label: string; nodes: any[]; color: string }[] = [];
+    for (const g of groups) {
+      const gn = groupNodes.get(g.id) || [];
+      if (gn.length > 0) parts.push({ label: g.label, nodes: gn, color: g.color || '#5B8FF9' });
+    }
+    if (noGroupNodes.length > 0) parts.push({ label: '无', nodes: noGroupNodes, color: '#888' });
+    if (conflictNodes.length > 0) parts.push({ label: '冲突', nodes: conflictNodes, color: '#CC4400' });
+    if (parts.length === 0) return;
+
+    // 按节点数决定框大小：每节点 18000px²，最小 260×260
+    const unitArea = 18000;
+    const innerPad = 55;
+    const boxMin = 260;
+    const gap = 12; // 框间小间距
+    parts.sort((a, b) => {
+      if (a.label === '冲突') return 1; if (b.label === '冲突') return -1;
+      if (a.label === '无') return 1; if (b.label === '无') return -1;
+      return 0;
+    });
+    // 计算每个框的实际宽高
+    const sizes = parts.map(p => {
+      const area = Math.max(boxMin * boxMin, p.nodes.length * unitArea);
+      return { w: Math.sqrt(area), h: Math.sqrt(area) };
+    });
+    // 紧排：按行打包，每行高度统一
+    const maxRowW = Math.max(...sizes.map(s => s.w)) * parts.length + gap * (parts.length - 1);
+    let rowY = 0, rowIdx = 0;
+    while (rowIdx < parts.length) {
+      // 找出这一行能放下的框
+      let rowX = 0, rowH = 0, endIdx = rowIdx;
+      for (let i = rowIdx; i < parts.length; i++) {
+        const testW = rowX + (rowX > 0 ? gap : 0) + sizes[i].w;
+        if (testW > maxRowW && rowIdx !== i) break;
+        rowX = testW;
+        rowH = Math.max(rowH, sizes[i].h);
+        endIdx = i + 1;
+      }
+      // 布局这一行
+      let curX = -rowX / 2;
+      for (let i = rowIdx; i < endIdx; i++) {
+        const s = sizes[i];
+        const bx = curX;
+        const by = rowY;
+        const bw = s.w, bh = rowH;
+        const nCount = parts[i].nodes.length;
+        const nCols = Math.ceil(Math.sqrt(nCount * bw / bh));
+        const nRows = Math.ceil(nCount / nCols);
+        const nx = nCols > 1 ? (bw - innerPad * 2) / (nCols - 1) : 0;
+        const ny = nRows > 1 ? (bh - innerPad * 2) / (nRows - 1) : 0;
+        parts[i].nodes.forEach((n, ni) => {
+          const nc = ni % nCols, nr = Math.floor(ni / nCols);
+          (n as any)._treeX = bx + innerPad + nc * nx;
+          (n as any)._treeY = by + innerPad + nr * ny;
+        });
+        (parts[i] as any)._box = { x: bx, y: by, w: bw, h: bh, color: parts[i].color, label: parts[i].label };
+        curX += bw + gap;
+      }
+      rowY += rowH + gap;
+      rowIdx = endIdx;
+    }
+    // 整体居中
+    const boxes = parts.map(p => (p as any)._box).filter(Boolean);
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const b of boxes) { minX = Math.min(minX, b.x); minY = Math.min(minY, b.y); maxX = Math.max(maxX, b.x + b.w); maxY = Math.max(maxY, b.y + b.h); }
+    const offX = -(minX + maxX) / 2, offY = -(minY + maxY) / 2;
+    for (const b of boxes) { b.x += offX; b.y += offY; }
+    for (const n of graph.nodes) {
+      if ((n as any)._treeX != null) { (n as any)._treeX += offX; (n as any)._treeY += offY; }
+    }
+
+    // 冲突节点饼状设色
+    for (const n of conflictNodes) {
+      const tags: string[] = n.tags || [];
+      const matchGroups = groups.filter(g => tags.includes(g.label));
+      (n as any)._pieColors = matchGroups.map(g => g.color || '#5B8FF9');
+    }
+
+    (graph as any)._categoryBoxes = parts.map(p => (p as any)._box).filter(Boolean);
+    // 不调用 scheduleSave：布局是临时视图，不应持久化固定状态
+
+    // 缓动进入
+    const simNodes = simManager.getSim()?.nodes() || [];
+    for (const n of graph.nodes) {
+      if ((n as any)._treeX != null) {
+        const sn = simNodes.find((s: any) => s.id === n.id);
+        (n as any)._sx = sn ? sn.x : n.x;
+        (n as any)._sy = sn ? sn.y : n.y;
+      }
+    }
+    simManager.getSim()?.stop();
+    let animFrame = 0; const animTotal = 90;
+    const animateIn = () => {
+      animFrame++;
+      const t = Math.min(1, animFrame / animTotal);
+      const ease = t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+      const sns = simManager.getSim()?.nodes() || [];
+      for (const n of graph.nodes) {
+        const tx = (n as any)._treeX, ty = (n as any)._treeY;
+        if (tx == null) continue;
+        const sx = (n as any)._sx, sy = (n as any)._sy;
+        n.x = sx + (tx - sx) * ease;
+        n.y = sy + (ty - sy) * ease;
+        n.fx = n.x; n.fy = n.y;
+        const sn = sns.find((s: any) => s.id === n.id);
+        if (sn) { sn.x = n.x; sn.y = n.y; sn.fx = n.x; sn.fy = n.y; }
+        if (animFrame >= animTotal) { n.fixed = true; }
+      }
+      draw();
+      if (animFrame < animTotal) requestAnimationFrame(animateIn);
+      else simManager.initSim();
+    };
+    requestAnimationFrame(animateIn);
+  };
+
+  // --- 集合搜索 ---
+  // --- 统一布局模式选择器 ---
+  interface SavedLayout { name: string; nodes: { id: string; x: number; y: number; fx: number | null; fy: number | null; fixed: boolean }[]; groupModes: { id: string; mode: string }[]; }
+  let layouts: SavedLayout[] = [];
+  const loadLayouts = () => {
+    try { layouts = JSON.parse(localStorage.getItem(`fg-layouts-${activeTab}`) || '[]'); } catch { layouts = []; }
+  };
+  const saveLayouts = () => { localStorage.setItem(`fg-layouts-${activeTab}`, JSON.stringify(layouts)); };
+  loadLayouts();
+
+  let modeCollapsed = false;
+  const modeToggle = document.createElement('span');
+  modeToggle.textContent = '布局 ▾'; modeToggle.style.cssText = 'font-size:0.8em;cursor:pointer;margin-right:4px;';
+  modeToggle.onclick = () => { modeCollapsed = !modeCollapsed; modeToggle.textContent = modeCollapsed ? '布局 ▸' : '布局 ▾'; modeRow.style.display = modeCollapsed ? 'none' : ''; };
+  controlsDiv.insertBefore(modeToggle, controlsDiv.firstChild);
+
+  const modeRow = document.createElement('div');
+  modeRow.style.cssText = 'display:flex;gap:3px;align-items:center;flex-wrap:wrap;';
+  controlsDiv.insertBefore(modeRow, controlsDiv.firstChild?.nextSibling || null);
+
+  let activeMode = 'default'; // default | tree | category | fullcat | layout:xxx
+  const exitLayoutMode = (toMode = 'default') => {
+    if (activeMode === 'tree') {
+      for (const n of graph.nodes) { n.fixed = false; n.fx = null; n.fy = null; delete (n as any)._pieColors; delete (n as any)._treeX; delete (n as any)._treeY; delete (n as any)._sx; delete (n as any)._sy; }
+      for (const e of graph.edges) { delete (e as any)._conflict; }
+    } else if (activeMode === 'category' || activeMode === 'fullcat') {
+      for (const n of graph.nodes) { n.fixed = false; n.fx = null; n.fy = null; delete (n as any)._pieColors; delete (n as any)._treeX; delete (n as any)._treeY; delete (n as any)._sx; delete (n as any)._sy; }
+      for (const e of graph.edges) { delete (e as any)._conflict; }
+      (graph as any)._categoryBoxes = null;
+      if (activeMode === 'fullcat') {
+        for (const g of graph.groups) {
+          const saved = (window as any)._savedGroupModes?.find((s: any) => s.id === g.id);
+          if (saved) g.displayMode = saved.mode;
+        }
+      }
+    }
+    activeMode = toMode;
+    renderModeBar();
+    if (toMode === 'default') { saveNow(); simManager.initSim(); draw(); }
+  };
+
+  const applyLayoutMode = (mode: string) => {
+    // 只在离开默认模式时保存一次
+    if (activeMode === 'default' && mode !== 'default') saveFixedState();
+    // 清理当前模式
+    if (activeMode === 'tree') { for (const n of graph.nodes) { n.fixed = false; n.fx = null; n.fy = null; } for (const e of graph.edges) { delete (e as any)._conflict; } }
+    if (activeMode === 'category' || activeMode === 'fullcat') { (graph as any)._categoryBoxes = null;
+      for (const n of graph.nodes) { delete (n as any)._pieColors; }
+      if (activeMode === 'fullcat') { for (const g of graph.groups) { const saved = (window as any)._savedGroupModes?.find((s: any) => s.id === g.id); if (saved) g.displayMode = saved.mode; } }
+    }
+    activeMode = mode;
+    renderModeBar();
+    if (mode === 'default') {
+      // 彻底清理所有布局残留
+      for (const n of graph.nodes) { n.fixed = false; n.fx = null; n.fy = null; delete (n as any)._pieColors; delete (n as any)._treeX; delete (n as any)._treeY; delete (n as any)._sx; delete (n as any)._sy; }
+      for (const e of graph.edges) { delete (e as any)._conflict; }
+      (graph as any)._categoryBoxes = null;
+      // 恢复进入布局前的固定节点和集合状态
+      restoreFixedState();
+      // 清空保存状态（避免下次恢复时用过期数据）
+      savedFixedNodes = [];
+      savedGroupModes = [];
+      // 持久化：把清理后的状态写入 localStorage，刷新后不加载脏数据
+      saveNow(); simManager.initSim(); draw();
+    } else if (mode === 'tree') {
+      for (const n of graph.nodes) { n.fixed = false; n.fx = null; n.fy = null; }
+      for (const e of graph.edges) { delete (e as any)._conflict; }
+      applyTreeLayout();
+    } else if (mode === 'category') {
+      pixi!.groupLayer.removeChildren();
+      applyCategoryLayout(false);
+    } else if (mode === 'fullcat') {
+      (window as any)._savedGroupModes = graph.groups.map(g => ({ id: g.id, mode: g.displayMode }));
+      for (const g of graph.groups) { if (g.displayMode === 'none') g.displayMode = 'rect'; }
+      pixi!.groupLayer.removeChildren();
+      applyCategoryLayout(true);
+    } else {
+      // 自定义布局
+      const l = layouts.find(x => x.name === mode);
+      if (l) {
+        for (const n of graph.nodes) { n.fixed = false; n.fx = null; n.fy = null; }
+        for (const sn of l.nodes) { const n = graph.nodes.find(n => n.id === sn.id); if (n) { n.x = sn.x; n.y = sn.y; n.fx = sn.fx; n.fy = sn.fy; n.fixed = sn.fixed; } }
+        for (const gm of l.groupModes) { const g = graph.groups.find(g => g.id === gm.id); if (g) g.displayMode = gm.mode as any; }
+        simManager.initSim(); draw();
+      }
+    }
+  };
+
+  const renderModeBar = () => {
+    modeRow.innerHTML = '';
+    const mkPill = (label: string, mode: string, isActive: boolean) => {
+      const pill = document.createElement('span');
+      pill.textContent = label;
+      pill.style.cssText = `font-size:0.75em;padding:1px 8px;cursor:pointer;border-radius:3px;white-space:nowrap;user-select:none;${
+        isActive ? 'background:rgba(91,143,249,0.35);border:1px solid rgba(91,143,249,0.5);color:#fff;' : 'border:1px solid rgba(255,255,255,0.18);'
+      }`;
+      pill.onclick = () => { if (!isActive) applyLayoutMode(mode); };
+      return pill;
+    };
+    modeRow.appendChild(mkPill('默认', 'default', activeMode === 'default'));
+    modeRow.appendChild(mkPill('树形', 'tree', activeMode === 'tree'));
+    modeRow.appendChild(mkPill('分类', 'category', activeMode === 'category'));
+    modeRow.appendChild(mkPill('全分类', 'fullcat', activeMode === 'fullcat'));
+    for (const l of layouts) {
+      const active = activeMode === l.name;
+      const pill = mkPill(l.name, l.name, active);
+      pill.oncontextmenu = (e) => {
+        e.preventDefault();
+        const menu = document.createElement('div');
+        menu.style.cssText = `position:fixed;left:${e.clientX}px;top:${e.clientY}px;z-index:200;background:rgba(40,42,48,0.9);border:1px solid rgba(255,255,255,0.15);border-radius:6px;padding:4px 0;min-width:90px;font-size:0.82em;color:#ccc;`;
+        const mk = (t: string, fn: () => void) => {
+          const mi = document.createElement('div'); mi.textContent = t;
+          mi.style.cssText = 'padding:3px 8px;cursor:pointer;';
+          mi.onmouseenter = () => mi.style.background = 'rgba(255,255,255,0.12)';
+          mi.onmouseleave = () => mi.style.background = '';
+          mi.onclick = () => { fn(); menu.remove(); }; return mi;
+        };
+        menu.appendChild(mk('重命名', () => { const nn = prompt('新名称：', l.name); if (nn) { const oldActive = activeMode === l.name; l.name = nn; if (oldActive) activeMode = nn; saveLayouts(); renderModeBar(); } }));
+        menu.appendChild(mk('删除', () => { if (confirm(`删除 "${l.name}"？`)) { if (activeMode === l.name) applyLayoutMode('default'); layouts = layouts.filter(x => x !== l); saveLayouts(); renderModeBar(); } }));
+        document.body.appendChild(menu);
+        const close = () => { menu.remove(); document.removeEventListener('click', close); };
+        setTimeout(() => document.addEventListener('click', close), 0);
+      };
+      modeRow.appendChild(pill);
+    }
+    // + 保存按钮
+    const addBtn = document.createElement('span');
+    addBtn.textContent = '+'; addBtn.title = '保存为布局';
+    addBtn.style.cssText = 'font-size:0.75em;padding:1px 6px;cursor:pointer;border-radius:3px;border:1px solid rgba(255,255,255,0.18);';
+    addBtn.onclick = () => {
+      // 如果在自定义布局模式，直接更新当前布局
+      if (activeMode !== 'default' && activeMode !== 'tree' && activeMode !== 'category' && activeMode !== 'fullcat') {
+        const l = layouts.find(x => x.name === activeMode);
+        if (l) {
+          l.nodes = graph.nodes.map(n => ({ id: n.id, x: n.x, y: n.y, fx: n.fx, fy: n.fy, fixed: n.fixed || false }));
+          l.groupModes = graph.groups.map(g => ({ id: g.id, mode: g.displayMode }));
+          saveLayouts(); renderModeBar(); return;
+        }
+      }
+      const name = prompt('布局名称：');
+      if (!name) return;
+      const exists = layouts.findIndex(l => l.name === name);
+      if (exists >= 0) { if (!confirm(`覆盖 "${name}"？`)) return; layouts.splice(exists, 1); }
+      layouts.push({ name,
+        nodes: graph.nodes.map(n => ({ id: n.id, x: n.x, y: n.y, fx: n.fx, fy: n.fy, fixed: n.fixed || false })),
+        groupModes: graph.groups.map(g => ({ id: g.id, mode: g.displayMode })),
+      });
+      saveLayouts(); renderModeBar();
+    };
+    modeRow.appendChild(addBtn);
+  };
+  renderModeBar();
+
+  // --- 集合搜索 ---
+  const groupInput = document.createElement('input');
+  groupInput.type = 'text'; groupInput.placeholder = '输入标签搜索/创建集合';
+  groupInput.style.cssText = 'font-size:0.85em;padding:2px 6px;border:1px solid #ccc;border-radius:4px;width:160px;';
+  controlsDiv.appendChild(groupInput);
+  const groupDropdown = document.createElement('div');
+  groupDropdown.style.cssText = 'position:absolute;z-index:50;background:var(--fg-bg,#fff);border:1px solid var(--fg-border,#d0d0d0);border-radius:4px;max-height:150px;overflow-y:auto;display:none;font-size:0.85em;min-width:160px;';
+  groupInput.parentElement!.style.position = 'relative';
+  groupInput.parentElement!.appendChild(groupDropdown);
+  groupInput.addEventListener('input', () => {
+    const q = groupInput.value.trim().toLowerCase();
+    groupDropdown.innerHTML = '';
+    if (!q) { groupDropdown.style.display = 'none'; return; }
+    const matched = graph.groups.filter(g => g.label.toLowerCase().includes(q));
+    if (matched.length > 0) {
+      matched.forEach(g => {
+        const item = document.createElement('div');
+        item.style.cssText = 'padding:4px 8px;cursor:pointer;display:flex;align-items:center;gap:6px;';
+        const dot = document.createElement('span');
+        dot.style.cssText = `display:inline-block;width:10px;height:10px;border-radius:50%;background:${g.color};flex-shrink:0;`;
+        item.appendChild(dot); item.appendChild(document.createTextNode(g.label));
+        item.onmousedown = (ev) => { ev.preventDefault(); fillGroup(g.id); groupDropdown.style.display = 'none'; };
+        item.onmouseenter = () => item.style.background = 'var(--fg-hover,#e8e8e8)';
+        item.onmouseleave = () => item.style.background = '';
+        groupDropdown.appendChild(item);
+      });
+    }
+    const createItem = document.createElement('div');
+    createItem.style.cssText = 'padding:4px 8px;cursor:pointer;color:#5B8FF9;font-style:italic;border-top:1px solid #eee;';
+    createItem.textContent = `+ 创建集合 "${q}"`;
+    createItem.onmousedown = (ev) => {
+      ev.preventDefault();
+      const newGroup = { id: 'g_' + Date.now(), label: q, color: '#5B8FF9', borderColor: '#3A6FD8', opacity: 0.15, displayMode: 'rect' as any, nodeColorMode: 'off' as any };
+      graph.groups.push(newGroup); scheduleSave(); draw(); fillGroup(newGroup.id);
+      groupDropdown.style.display = 'none';
+    };
+    groupDropdown.appendChild(createItem);
+    groupDropdown.style.display = 'block';
+  });
+  groupInput.addEventListener('focus', () => { if (groupInput.value.trim()) groupInput.dispatchEvent(new Event('input')); });
+  groupInput.addEventListener('blur', () => { setTimeout(() => { groupDropdown.style.display = 'none'; }, 150); });
+
+  // --- 缩放/平移由 pixi-viewport 处理 ---
+
+  // --- 右键菜单 ---
+  const onContextMenu = (type: 'blank'|'node'|'edge'|'group', id: string | null, screenX: number, screenY: number) => {
+    const items: { label: string; action: () => void }[] = [];
+    const mx = screenX, my = screenY; // appShell 在 (0,0)，直接用屏幕坐标
+    if (type === 'blank') {
+      items.push({
+        label: '新建节点',
+        action: () => {
+          const center = pixi?.viewport?.center ?? { x: gw / 2, y: gh / 2 };
+          const cx = center.x, cy = center.y;
+          graph.nodes.push({ id: 'n_' + Date.now(), label: '新节点', radius: 12, headingLevel: 6, tags: [], color: '#5B8FF9', x: cx, y: cy });
+          scheduleSave(); simManager.initSim();
+        },
+      });
+    } else if (type === 'node' && id) {
+      items.push({ label: '编辑', action: () => { fillNode(id); } });
+      const node = graph.nodes.find(n => n.id === id);
+      if (node?.mediaType && isExpanded(id)) {
+        items.push({ label: '收起', action: () => { hideMedia(id); draw(); } });
+      } else if (node?.mediaType) {
+        items.push({ label: '展开', action: () => {
+          const n = graph.nodes.find(n => n.id === id)!;
+          let displayUrl = n.mediaUrl || '';
+          // Electron 本地路径 → file://
+          if (displayUrl && /^[A-Z]:[\\/]/.test(displayUrl)) {
+            displayUrl = 'file:///' + displayUrl.replace(/\\/g, '/').replace(/^[A-Z]:/, (m: string) => m.toLowerCase());
+          }
+          showMedia(mediaOverlayContainer, id, n.label || n.id, n.mediaType, displayUrl, n.color || '#5B8FF9', () => {
+            const sp = pixi!.viewport.toScreen(n.x, n.y);
+            const rect = pixi!.app.canvas.getBoundingClientRect();
+            return { x: rect.left + sp.x, y: rect.top + sp.y };
+          });
+          draw();
+        }});
+      }
+      if (!node?.mediaType) {
+        items.push({ label: '设为图片', action: () => {
+          const url = prompt('图片 URL：');
+          if (url) { const n = graph.nodes.find(n => n.id === id); if (n) { n.mediaType = 'image'; n.mediaUrl = url; scheduleSave(); } }
+        }});
+        items.push({ label: '设为文档', action: () => {
+          const url = prompt('文档内容或 URL：');
+          if (url) { const n = graph.nodes.find(n => n.id === id); if (n) { n.mediaType = 'md'; n.mediaUrl = url; scheduleSave(); } }
+        }});
+      }
+      if (isFixedNode(id)) {
+        items.push({ label: '解除固定', action: () => { unfixNodes([id]); } });
+      } else {
+        items.push({ label: '固定', action: () => { fixNode(id); } });
+      }
+      items.push({ label: '新建子节点', action: () => { const parent = graph.nodes.find(n => n.id === id); const childId = 'n_' + Date.now(); graph.nodes.push({ id: childId, label: '子节点', radius: 10, headingLevel: Math.min(6, (parent?.headingLevel || 1) + 1), tags: [...(parent?.tags || [])], color: '#5AD8A6', x: (parent?.x || 200) + 60, y: (parent?.y || 200) + 40 }); graph.edges.push({ source: id, target: childId, label: '', color: '#BFBFBF', arrow: defArrow }); scheduleSave(); simManager.initSim(); } });
+      items.push({ label: '连线', action: () => { linkMode = true; linkSrc = id; } });
+      items.push({ label: '删除', action: () => { graph.nodes = graph.nodes.filter(n => n.id !== id); graph.edges = graph.edges.filter(e => e.source !== id && e.target !== id); if (selNode === id) clearEd(); scheduleSave(); simManager.initSim(); } });
+    } else if (type === 'edge' && id !== null) {
+      const idx = parseInt(id);
+      items.push({ label: '编辑', action: () => { fillEdge(idx); } });
+      items.push({ label: '交换方向', action: () => { const e = graph.edges[idx]; if (e) { [e.source, e.target] = [e.target, e.source]; scheduleSave(); simManager.initSim(); } } });
+      items.push({ label: '删除', action: () => { graph.edges.splice(idx, 1); if (selEdge === idx) clearEd(); scheduleSave(); simManager.initSim(); } });
+    } else if (type === 'group' && id) {
+      items.push({ label: '编辑', action: () => { fillGroup(id); } });
+    }
+    if (items.length > 0) showContextMenu(appShell, mx, my, items);
+  };
+
+  const handleLinkTap = (x: number, y: number) => {
+    if (!linkMode || !linkSrc) return false;
+    const nodes = getSim()?.nodes() || [];
+    const n = nodes.find((nd: any) => (nd.x - x) ** 2 + (nd.y - y) ** 2 <= ((nd.radius || 9) + nodeExpand) ** 2);
+    if (n) {
+      if (linkSrc === n.id) { linkMode = false; linkSrc = null; return true; }
+      if (graph.edges.some(e => e.source === linkSrc && e.target === n.id)) { linkMode = false; linkSrc = null; return true; }
+      graph.edges.push({ source: linkSrc, target: n.id, label: '', color: '#BFBFBF', arrow: defArrow });
+      scheduleSave(); simManager.initSim();
+    }
+    linkMode = false; linkSrc = null; return true;
+  };
+
+  // --- 事件绑定将在 pixiReady 后进行 ---
+
+  // --- 启动（等待 PixiJS 就绪）---
+  // 文件拖拽到画布：自动创建多媒体节点
+  appShell.addEventListener('dragover', (e) => { e.preventDefault(); });
+  appShell.addEventListener('drop', (e) => {
+    e.preventDefault();
+    const file = e.dataTransfer?.files?.[0];
+    if (!file || !pixi) return;
+    const vp = pixi.viewport;
+    const rect = pixi.app.canvas.getBoundingClientRect();
+    const sx = e.clientX - rect.left;
+    const sy = e.clientY - rect.top;
+    const wp = vp.toWorld(sx, sy);
+    const id = 'n_' + Date.now();
+    let mediaType = 'md';
+    if (/\.(png|jpg|jpeg|gif|webp|svg|bmp)$/i.test(file.name)) mediaType = 'image';
+    else if (/\.(mp3|wav|ogg|flac|aac|m4a)$/i.test(file.name)) mediaType = 'audio';
+    else if (/\.(mp4|webm|mov|avi|mkv)$/i.test(file.name)) mediaType = 'video';
+    const url = URL.createObjectURL(file);
+    graph.nodes.push({ id, label: file.name, radius: 12, headingLevel: 4, tags: [], color: '#5B8FF9', x: wp.x, y: wp.y, mediaType, mediaUrl: url });
+    scheduleSave(); simManager.initSim(); draw();
+  });
+
+  await pixiReady;
+  // 流体层模糊滤镜（只设一次）
+  // 光晕 / 流体滤镜
+  const blurF = new BlurFilter({ strength: 14, quality: 4 });
+  const thresholdF = createThresholdFilter();
+  const updateBlobFilters = () => {
+    if (fluidAppearance) pixi!.blobLayer.filters = [blurF, thresholdF];
+    else if (glowAppearance) pixi!.blobLayer.filters = [blurF];
+    else pixi!.blobLayer.filters = [];
+  };
+  updateBlobFilters();
+  // 标记图加载完成后才允许 viewport 事件触发绘制
+  let readyToDraw = false;
+
+  // viewport 缩放/平移时触发刷新（用于标签显隐等）
+  pixi!.viewport.on('moved', () => { if (readyToDraw) draw(); });
+  pixi!.viewport.on('zoomed-end', () => { if (readyToDraw) draw(); });
+
+  const eventsCanvas = pixi!.app.canvas as any;
+  setupCanvasEvents(eventsCanvas, {
+    graph, getSelNode: () => selNode, setSelNode: v => { selNode = v; },
+    getSelEdge: () => selEdge, setSelEdge: v => { selEdge = v; },
+    getSelGroup: () => selGroup, setSelGroup: v => { selGroup = v; },
+    getSimulation: getSim, getTransform: getViewportTransform,
+    viewport: pixi!.viewport,
+    getCanvas: () => pixi!.app.canvas as any,
+    getNodeExpand: () => nodeExpand, getLineExpand: () => lineExpand,
+    getDraggingNode: () => draggingNode, setDraggingNode: v => { draggingNode = v; },
+    getWasDragged: () => wasDragged, setWasDragged: v => { wasDragged = v; },
+    draw, onContextMenu, fixNode, isFixedNode, selectionBox, fixNodes, unfixNodes, appShell, triggerSave: () => scheduleSave(),
+    onDragStart: (id: string) => simManager.setDragNode(id), onDragEnd: () => simManager.setDragNode(null),
+    onTap: (x: number, y: number) => {
+      if (handleLinkTap(x, y)) return;
+      const nodes = getSim()?.nodes() || [];
+      const n = nodes.find((nd: any) => (nd.x - x) ** 2 + (nd.y - y) ** 2 <= ((nd.radius || 9) + nodeExpand) ** 2);
+      if (n) { fillNode(n.id); return; }
+      for (let i = 0; i < graph.edges.length; i++) {
+        const e = graph.edges[i]; const s = nodes.find((nd: any) => nd.id === e.source), t = nodes.find((nd: any) => nd.id === e.target);
+        if (!s || !t) continue;
+        const dx = t.x - s.x, dy = t.y - s.y; const len2 = dx * dx + dy * dy;
+        let tp = ((x - s.x) * dx + (y - s.y) * dy) / len2; tp = Math.max(0, Math.min(1, tp));
+        if ((x - (s.x + tp * dx)) ** 2 + (y - (s.y + tp * dy)) ** 2 <= (lineExpand + 3) ** 2) { fillEdge(i); return; }
+      }
+      for (const g of graph.groups) {
+        if (g.displayMode === 'none') continue;
+        const members = nodes.filter((nd: any) => (nd.tags || []).includes(g.label));
+        if (members.length === 0) continue;
+        if (g.displayMode === 'fluid') { for (const m of members) { if ((m.x - x) ** 2 + (m.y - y) ** 2 <= ((m.radius || 9) * (g.fluidRadius || 3)) ** 2) { fillGroup(g.id); return; } } continue; }
+      }
+      clearEd();
+    },
+  });
+
+  // 开发阶段：强制清除旧 demo 数据，确保看到最新 DEMO_DATA
+  localStorage.removeItem('fg-data-demo');
+
+  // 恢复上次打开的标签页（保证 demo 始终存在）
+  const restored = restoreTabs();
+  if (restored && restored.tabs.length > 0) {
+    openTabs = restored.tabs;
+    if (!openTabs.includes('demo')) openTabs.unshift('demo');
+    activeTab = restored.active || 'demo';
+  } else {
+    openTabs = ['demo'];
+    activeTab = 'demo';
+  }
+  renderTabs(openTabs, activeTab);
+
+  // 尝试恢复文件夹
+  // Electron 模式：从 localStorage 读路径
+  const ea2 = (window as any).electronAPI;
+  if (ea2) {
+    const savedPath = localStorage.getItem('fg-folder-path');
+    if (savedPath && await ea2.exists(savedPath)) {
+      fileSystemMountPath = savedPath;
+      sidebar.setFolderPath(savedPath);
+      await refreshFileTree();
+    }
+  } else {
+    const savedHandle = await loadFolderHandle();
+    if (savedHandle) {
+      const ok = await restoreFolder(savedHandle);
+      if (ok) { sidebar.setFolderPath(savedHandle.name); await refreshFileTree(); }
+    }
+  }
+
+  // 在 loadGraphData（触发模拟）之前就把原点屏中
+  {
+    const p = pixi!;
+    if (p.app.canvas.clientWidth > 0) {
+      p.viewport.position.set(p.app.canvas.clientWidth / 2, p.app.canvas.clientHeight / 2);
+    }
+  }
+  await loadGraphData(activeTab);
+  loadLayouts(); renderModeBar();
+  updateGwGh();
+  readyToDraw = true;
+
+  // 模拟启动后可能短暂抖动，延迟一帧重新居中
+  requestAnimationFrame(() => {
+    const vp = pixi!.viewport;
+    const cw = pixi!.app.canvas.clientWidth;
+    const ch = pixi!.app.canvas.clientHeight;
+    if (cw > 0 && ch > 0) vp.position.set(cw / 2, ch / 2);
+    draw();
+  });
+}
+
+main().catch(console.error);

@@ -34,7 +34,7 @@ export function showMedia(
   el.style.cssText =
     'position:absolute;z-index:15;border:3px solid ' + borderColor + ';' +
     'border-radius:0 8px 8px 8px;overflow:visible;background:rgba(40,42,48,0.92);' +
-    'pointer-events:auto;box-shadow:0 4px 16px rgba(0,0,0,0.3);';
+    'pointer-events:auto;touch-action:none;box-shadow:0 4px 16px rgba(0,0,0,0.3);';
   const fileUrl = toFileUrl(url);
 
   // 节点名标签（左上角伸出）
@@ -49,9 +49,9 @@ export function showMedia(
   // 拖拽手柄
   const handle = document.createElement('div');
   handle.style.cssText =
-    'display:flex;align-items:center;justify-content:center;height:18px;' +
+    'display:flex;align-items:center;justify-content:center;height:24px;' +
     'cursor:move;border-bottom:1px solid rgba(255,255,255,0.1);padding:2px 0;' +
-    'touch-action:none;';
+    'touch-action:none;user-select:none;-webkit-user-select:none;';
   const dot = document.createElement('div');
   dot.style.cssText = 'width:5px;height:5px;border-radius:50%;background:rgba(255,255,255,0.3);';
   handle.appendChild(dot);
@@ -134,27 +134,33 @@ export function showMedia(
   // 伸缩手柄（右下角圆点）
   const resizer = document.createElement('div');
   resizer.style.cssText =
-    'position:absolute;right:4px;bottom:4px;width:8px;height:8px;border-radius:50%;' +
-    'background:rgba(255,255,255,0.3);cursor:nwse-resize;z-index:2;touch-action:none;';
+    'position:absolute;right:4px;bottom:4px;width:10px;height:10px;border-radius:50%;' +
+    'background:rgba(255,255,255,0.3);cursor:nwse-resize;z-index:2;touch-action:none;user-select:none;';
   let resizing = false, rsx = 0, rsy = 0, rsw = 0, rsh = 0;
   resizer.addEventListener('dblclick', () => {
     el.style.width = ''; el.style.height = '';
   });
-  resizer.addEventListener('pointerdown', (e) => {
+
+  const startResize = (e: PointerEvent | TouchEvent) => {
     e.preventDefault(); e.stopPropagation();
-    resizer.setPointerCapture(e.pointerId);
-    resizing = true; rsx = e.clientX; rsy = e.clientY;
+    const pt = 'touches' in e ? e.touches[0] : e as PointerEvent;
+    if (!pt) return;
+    resizer.setPointerCapture?.((e as PointerEvent).pointerId);
+    resizing = true; rsx = pt.clientX; rsy = pt.clientY;
     rsw = el.offsetWidth; rsh = el.offsetHeight;
     onDragStart?.();
-  });
-  window.addEventListener('pointermove', (e) => {
+  };
+
+  const moveResize = (e: PointerEvent | TouchEvent) => {
     if (!resizing) return;
-    let dw = Math.max(120, rsw + (e.clientX - rsx));
-    let dh = Math.max(60, rsh + (e.clientY - rsy));
-    // 图片和视频等比缩放
+    e.preventDefault();
+    const pt = 'touches' in e ? e.touches[0] : e as PointerEvent;
+    if (!pt) return;
+    let dw = Math.max(120, rsw + (pt.clientX - rsx));
+    let dh = Math.max(60, rsh + (pt.clientY - rsy));
     if (type === 'image' || type === 'video') {
       const ratio = rsw / Math.max(1, rsh);
-      if (Math.abs(e.clientX - rsx) > Math.abs(e.clientY - rsy)) {
+      if (Math.abs(pt.clientX - rsx) > Math.abs(pt.clientY - rsy)) {
         dh = Math.max(60, dw / ratio);
       } else {
         dw = Math.max(120, dh * ratio);
@@ -162,7 +168,6 @@ export function showMedia(
     }
     el.style.width = dw + 'px';
     el.style.height = dh + 'px';
-    // 连带缩放内部内容（音频只横向伸展，不设高度）
     el.querySelectorAll('img, video, iframe, .media-body, [contenteditable]').forEach((inner) => {
       const iw = dw - 16, ih = dh - 30;
       (inner as HTMLElement).style.maxWidth = iw + 'px';
@@ -171,11 +176,20 @@ export function showMedia(
       (inner as HTMLElement).style.height = ih + 'px';
     });
     const audio = el.querySelector('audio');
-    if (audio) { audio.style.width = (dw - 16) + 'px'; }
-  });
-  window.addEventListener('pointerup', () => {
+    if (audio) { (audio as HTMLElement).style.width = (dw - 16) + 'px'; }
+  };
+
+  const endResize = () => {
     if (resizing) { resizing = false; onDragEnd?.(); }
-  });
+  };
+
+  resizer.addEventListener('pointerdown', startResize);
+  resizer.addEventListener('touchstart', startResize, { passive: false });
+  window.addEventListener('pointermove', moveResize);
+  window.addEventListener('touchmove', moveResize, { passive: false });
+  window.addEventListener('pointerup', endResize);
+  window.addEventListener('touchend', endResize);
+  window.addEventListener('touchcancel', endResize);
   el.appendChild(resizer);
 
   container.appendChild(el);
@@ -186,25 +200,40 @@ export function showMedia(
   // 拖拽逻辑
   let dragging = false, sx = 0, sy = 0, ox = 0, oy = 0;
   handle.addEventListener('dblclick', () => { ov.offsetX = 0; ov.offsetY = 0; });
-  handle.addEventListener('pointerdown', (e) => {
+
+  const startDrag = (e: PointerEvent | TouchEvent) => {
     e.preventDefault(); e.stopPropagation();
-    handle.setPointerCapture(e.pointerId);
-    dragging = true; sx = e.clientX; sy = e.clientY; ox = ov.offsetX; oy = ov.offsetY;
+    const pt = 'touches' in e ? e.touches[0] : e as PointerEvent;
+    if (!pt) return;
+    handle.setPointerCapture?.((e as PointerEvent).pointerId);
+    dragging = true; sx = pt.clientX; sy = pt.clientY; ox = ov.offsetX; oy = ov.offsetY;
     onDragStart?.();
-  });
-  window.addEventListener('pointermove', (e) => {
+  };
+
+  const moveDrag = (e: PointerEvent | TouchEvent) => {
     if (!dragging) return;
-    ov.offsetX = ox + (e.clientX - sx);
-    ov.offsetY = oy + (e.clientY - sy);
-    el.style.left = (parseFloat(el.style.left) || 0) + (e.clientX - sx) + 'px';
-    el.style.top = (parseFloat(el.style.top) || 0) + (e.clientY - sy) + 'px';
-    // 更新相对偏移基准
-    sx = e.clientX; sy = e.clientY;
+    e.preventDefault();
+    const pt = 'touches' in e ? e.touches[0] : e as PointerEvent;
+    if (!pt) return;
+    ov.offsetX = ox + (pt.clientX - sx);
+    ov.offsetY = oy + (pt.clientY - sy);
+    el.style.left = (parseFloat(el.style.left) || 0) + (pt.clientX - sx) + 'px';
+    el.style.top = (parseFloat(el.style.top) || 0) + (pt.clientY - sy) + 'px';
+    sx = pt.clientX; sy = pt.clientY;
     ox = ov.offsetX; oy = ov.offsetY;
-  });
-  window.addEventListener('pointerup', () => {
+  };
+
+  const endDrag = () => {
     if (dragging) { dragging = false; onDragEnd?.(); }
-  });
+  };
+
+  handle.addEventListener('pointerdown', startDrag);
+  handle.addEventListener('touchstart', startDrag, { passive: false });
+  window.addEventListener('pointermove', moveDrag);
+  window.addEventListener('touchmove', moveDrag, { passive: false });
+  window.addEventListener('pointerup', endDrag);
+  window.addEventListener('touchend', endDrag);
+  window.addEventListener('touchcancel', endDrag);
 
   positionMedia(nodeId, getWorldPos);
 }

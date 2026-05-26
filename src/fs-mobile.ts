@@ -15,9 +15,21 @@ async function ensureWorkDir(): Promise<void> {
   } catch {}
 }
 
-/** 打开文件选择器，导入 .json 文件到应用数据目录 */
+/** 请求文件权限并打开文件选择器，导入 .json 文件到应用数据目录 */
 export async function openFolderMobile(): Promise<string | null> {
   try {
+    // 运行时请求权限（Android 6.0+ / HarmonyOS 必须）
+    try {
+      const perm = await FilePicker.checkPermissions();
+      if (perm.readExternalStorage !== 'granted') {
+        const req = await FilePicker.requestPermissions();
+        if (req.readExternalStorage !== 'granted') {
+          console.error('文件权限被拒绝');
+          return null;
+        }
+      }
+    } catch {}
+
     const result = await FilePicker.pickFiles({
       limit: 0,
       types: ['application/json'],

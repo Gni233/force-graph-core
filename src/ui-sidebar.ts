@@ -7,6 +7,8 @@ export interface SidebarCallbacks {
   onCopyFile?: (path: string) => void;
   onNewFolder?: (path: string) => void;
   onMoveFile?: (srcPath: string, dstDir: string) => void;
+  onApplyPreset?: (presetName: string) => void;
+  onResetPresets?: () => void;
 }
 
 export interface FileTreeItem {
@@ -14,6 +16,8 @@ export interface FileTreeItem {
   kind: 'file' | 'directory';
   children: FileTreeItem[];
 }
+
+import { safePrompt } from './dialog';
 
 export function createSidebar(
   parent: HTMLElement,
@@ -43,8 +47,8 @@ export function createSidebar(
   newFileBtn.textContent = '+ 新建图';
   newFileBtn.title = '在当前目录下创建新图文件';
   newFileBtn.style.cssText = 'background:none;border:none;color:#aaa;cursor:pointer;padding:3px 0;width:100%;text-align:left;';
-  newFileBtn.onclick = () => {
-    const name = prompt('输入图文件名（自动加 .json）：');
+  newFileBtn.onclick = async () => {
+    const name = await safePrompt('输入图文件名（自动加 .json）：');
     if (name) onNewFile(name.endsWith('.json') ? name : name + '.json');
   };
   newRow.appendChild(newFileBtn);
@@ -110,12 +114,12 @@ export function createSidebar(
         // 右键菜单（文件夹）
         dirItem.oncontextmenu = (e) => {
           showMenu(e, [
-            { text: '新建图', action: () => {
-              const name = prompt('图文件名（自动加 .json）：');
+            { text: '新建图', action: async () => {
+              const name = await safePrompt('图文件名（自动加 .json）：');
               if (name) onNewFile(fullPath + '/' + (name.endsWith('.json') ? name : name + '.json'));
             }},
-            { text: '新建文件夹', action: () => {
-              const name = prompt('文件夹名：');
+            { text: '新建文件夹', action: async () => {
+              const name = await safePrompt('文件夹名：');
               if (name) onNewFolder?.(fullPath + '/' + name);
             }},
           ]);
@@ -176,8 +180,8 @@ export function createSidebar(
 
         fileItem.oncontextmenu = (e) => {
           showMenu(e, [
-            { text: '重命名', action: () => {
-              const newName = prompt('新文件名：', item.name);
+            { text: '重命名', action: async () => {
+              const newName = await safePrompt('新文件名：', item.name);
               if (newName && newName !== item.name) onRenameFile(fullPath, newName);
             }},
             { text: '创建副本', action: () => { onCopyFile?.(fullPath); } },
@@ -210,19 +214,15 @@ export function createSidebar(
   fileTree.oncontextmenu = (e) => {
     if ((e.target as HTMLElement) !== fileTree) return;
     showMenu(e, [
-      { text: '新建图', action: () => {
-        const name = prompt('输入图文件名（自动加 .json）：');
+      { text: '新建图', action: async () => {
+        const name = await safePrompt('输入图文件名（自动加 .json）：');
         if (name) onNewFile(name.endsWith('.json') ? name : name + '.json');
       }},
-      { text: '新建文件夹', action: () => {
-        const name = prompt('文件夹名：');
+      { text: '新建文件夹', action: async () => {
+        const name = await safePrompt('文件夹名：');
         if (name) onNewFolder?.(name);
       }},
     ]);
-  };
-
-  const setFolderPath = (path: string) => {
-    folderPath.textContent = path || '（未选择）';
   };
 
   collapseBtn.onclick = () => {
@@ -240,47 +240,16 @@ export function createSidebar(
     }
   };
 
+  // --- 设置按钮 ---
   const settingsSection = document.createElement('div');
-  settingsSection.style.cssText = 'padding:8px 10px;border-top:1px solid #444;margin-top:auto;';
-  const settingsTitle = document.createElement('div');
-  settingsTitle.textContent = '应用设置';
-  settingsTitle.style.cssText = 'font-weight:bold;color:#999;font-size:0.8em;margin-bottom:6px;';
-  settingsSection.appendChild(settingsTitle);
+  settingsSection.style.cssText = 'border-top:1px solid #444;margin-top:auto;';
+  const presetHeader = document.createElement('div');
+  presetHeader.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:8px 10px;cursor:pointer;';
+  presetHeader.innerHTML = '<span style="font-weight:bold;color:#999;font-size:0.8em;">应用设置</span>';
+  presetHeader.onclick = () => callbacks.onApplyPreset?.('');
+  settingsSection.appendChild(presetHeader);
 
-  const folderRow = document.createElement('div');
-  folderRow.style.cssText = 'display:flex;align-items:center;gap:4px;margin-bottom:4px;';
-  const openFolderBtn = document.createElement('button');
-  openFolderBtn.textContent = '打开目录';
-  openFolderBtn.style.cssText = 'background:#3a3a3a;color:#e0e0e0;border:1px solid #555;border-radius:3px;padding:2px 6px;cursor:pointer;font-size:0.8em;';
-  openFolderBtn.onclick = onOpenFolder;
-  folderRow.appendChild(openFolderBtn);
-  const folderPath = document.createElement('span');
-  folderPath.style.cssText = 'font-size:0.75em;color:#888;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
-  folderPath.textContent = '（未选择）';
-  folderRow.appendChild(folderPath);
-  settingsSection.appendChild(folderRow);
-
-  const cardLayoutRow = document.createElement('div');
-  cardLayoutRow.style.cssText = 'display:flex;align-items:center;gap:6px;';
-  const cardLayoutChk = document.createElement('input');
-  cardLayoutChk.type = 'checkbox';
-  const cardLayoutLabel = document.createElement('span');
-  cardLayoutLabel.textContent = '卡片布局';
-  cardLayoutRow.appendChild(cardLayoutChk);
-  cardLayoutRow.appendChild(cardLayoutLabel);
-  settingsSection.appendChild(cardLayoutRow);
   sidebar.appendChild(settingsSection);
-
-  const CARD_KEY = 'fg-card-layout';
-  const getCardLayout = () => localStorage.getItem(CARD_KEY) === '1';
-  const setCardLayout = (v: boolean) => { localStorage.setItem(CARD_KEY, v ? '1' : '0'); };
-  cardLayoutChk.checked = getCardLayout();
-  document.body.classList.toggle('card-layout', getCardLayout());
-  cardLayoutChk.addEventListener('change', () => {
-    setCardLayout(cardLayoutChk.checked);
-    document.body.classList.toggle('card-layout', cardLayoutChk.checked);
-  });
-
   parent.appendChild(sidebar);
-  return { sidebar, updateFileTree, setFolderPath, getCurrentFile: () => currentFile };
+  return { sidebar, updateFileTree, getCurrentFile: () => currentFile };
 }

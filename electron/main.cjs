@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain, Menu } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, Menu, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 
@@ -13,8 +13,8 @@ function createWindow() {
     minWidth: 800,
     minHeight: 600,
     title: 'Force Graph',
-    titleBarStyle: 'hiddenInset',
     backgroundColor: '#1e1e22',
+    frame: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
@@ -30,24 +30,11 @@ function createWindow() {
     mainWindow.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
   }
 
-  // 菜单：文件操作
-  const menu = Menu.buildFromTemplate([
-    {
-      label: '文件',
-      submenu: [
-        {
-          label: '打开目录',
-          accelerator: 'CmdOrCtrl+O',
-          click: () => mainWindow.webContents.send('menu-open-folder'),
-        },
-        { type: 'separator' },
-        { label: '退出', role: 'quit' },
-      ],
-    },
-    { label: '编辑', submenu: [{ role: 'undo' }, { role: 'redo' }, { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }] },
-    { label: '视图', submenu: [{ role: 'reload' }, { role: 'toggleDevTools' }, { type: 'separator' }, { role: 'zoomIn' }, { role: 'zoomOut' }, { role: 'resetZoom' }] },
-  ]);
-  Menu.setApplicationMenu(menu);
+  // 无边框窗口 + 主题适配（菜单由 renderer 自行管理）
+  Menu.setApplicationMenu(null);
+
+  mainWindow.on('maximize', () => mainWindow?.webContents.send('window-maximize-change', true));
+  mainWindow.on('unmaximize', () => mainWindow?.webContents.send('window-maximize-change', false));
 }
 
 // IPC：文件系统操作（完全脱离浏览器沙箱）
@@ -112,25 +99,37 @@ ipcMain.handle('dialog-save-file', async (_, defaultName) => {
 // 主题适配：渲染进程通知主进程更新窗口颜色
 ipcMain.handle('set-titlebar-color', async (_, bgColor) => {
   if (mainWindow) {
-    const isDark = isColorDark(bgColor);
     mainWindow.setBackgroundColor(bgColor);
-    // Windows: 设置标题栏颜色
-    if (process.platform === 'win32') {
-      mainWindow.setTitleBarOverlay({ color: bgColor, symbolColor: isDark ? '#ffffff' : '#000000' });
-    }
-    // macOS: 设置 traffic light 颜色
-    if (process.platform === 'darwin') {
-      mainWindow.setTitleBarOverlay({ color: bgColor, symbolColor: isDark ? '#ffffff' : '#000000', height: 36 });
-    }
   }
 });
 
-function isColorDark(hex) {
-  const r = parseInt(hex.slice(1, 3), 16);
-  const g = parseInt(hex.slice(3, 5), 16);
-  const b = parseInt(hex.slice(5, 7), 16);
-  return (r * 299 + g * 587 + b * 114) / 1000 < 128;
+// 窗口控制
+ipcMain.on('open-external', (_, url) => shell.openExternal(url));
+ipcMain.on('window-minimize', () => mainWindow?.minimize());
+ipcMain.on('window-maximize', () => {
+  if (mainWindow?.isMaximized()) mainWindow.unmaximize();
+  else mainWindow?.maximize();
+});
+ipcMain.on('window-close', () => mainWindow?.close());
+ipcMain.handle('window-is-maximized', () => mainWindow?.isMaximized() ?? false);
+
+// 应用配置持久化（写入 userData 目录，不依赖 localStorage）
+function getConfigPath() {
+  return path.join(app.getPath('userData'), 'config.json');
 }
+ipcMain.handle('config-read', () => {
+  try { return JSON.parse(fs.readFileSync(getConfigPath(), 'utf-8')); }
+  catch { return {}; }
+});
+ipcMain.handle('config-write', (_, updates) => {
+  try {
+    const cp = getConfigPath();
+    const current = (() => { try { return JSON.parse(fs.readFileSync(cp, 'utf-8')); } catch { return {}; } })();
+    Object.assign(current, updates);
+    fs.writeFileSync(cp, JSON.stringify(current, null, 2), 'utf-8');
+    return { ok: true };
+  } catch (e) { return { error: e.message }; }
+});
 
 app.whenReady().then(createWindow);
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });

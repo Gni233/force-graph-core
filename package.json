@@ -9,9 +9,17 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "electron:dev": "concurrently \"vite\" \"wait-on http://localhost:5174 && cross-env NODE_ENV=development electron .\"",
-    "electron:build": "vite build && electron-builder"
+    "electron:build": "vite build && electron-builder",
+    "android:sync": "npm run build && npx cap sync android",
+    "android:build": "npm run android:sync && cd android && call gradlew.bat assembleDebug",
+    "release": "npm run android:build && git add -A && git commit -m \"release %npm_package_version%\" && git push origin main"
   },
   "dependencies": {
+    "@capacitor/android": "^8.3.4",
+    "@capacitor/cli": "^8.3.4",
+    "@capacitor/core": "^8.3.4",
+    "@capacitor/filesystem": "^8.1.2",
+    "@capawesome/capacitor-file-picker": "^8.0.2",
     "d3": "^7.9.0",
     "pixi-filters": "^6.1.5",
     "pixi-viewport": "^6.0.3",

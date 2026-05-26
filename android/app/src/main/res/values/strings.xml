@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Force Graph</string>
+    <string name="title_activity_main">Force Graph</string>
+    <string name="package_name">com.forcegraph.core</string>
+    <string name="custom_url_scheme">com.forcegraph.core</string>
+</resources>

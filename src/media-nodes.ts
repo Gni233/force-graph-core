@@ -24,7 +24,9 @@ export function showMedia(
   type: 'image' | 'audio' | 'video' | 'md',
   url: string,
   borderColor: string,
-  getWorldPos: () => { x: number; y: number }
+  getWorldPos: () => { x: number; y: number },
+  onDragStart?: () => void,
+  onDragEnd?: () => void
 ) {
   hideMedia(nodeId);
   const el = document.createElement('div');
@@ -47,8 +49,9 @@ export function showMedia(
   // 拖拽手柄
   const handle = document.createElement('div');
   handle.style.cssText =
-    'display:flex;align-items:center;justify-content:center;height:14px;' +
-    'cursor:move;border-bottom:1px solid rgba(255,255,255,0.1);padding:2px 0;';
+    'display:flex;align-items:center;justify-content:center;height:18px;' +
+    'cursor:move;border-bottom:1px solid rgba(255,255,255,0.1);padding:2px 0;' +
+    'touch-action:none;';
   const dot = document.createElement('div');
   dot.style.cssText = 'width:5px;height:5px;border-radius:50%;background:rgba(255,255,255,0.3);';
   handle.appendChild(dot);
@@ -131,8 +134,8 @@ export function showMedia(
   // 伸缩手柄（右下角圆点）
   const resizer = document.createElement('div');
   resizer.style.cssText =
-    'position:absolute;right:4px;bottom:4px;width:5px;height:5px;border-radius:50%;' +
-    'background:rgba(255,255,255,0.3);cursor:nwse-resize;z-index:2;';
+    'position:absolute;right:4px;bottom:4px;width:8px;height:8px;border-radius:50%;' +
+    'background:rgba(255,255,255,0.3);cursor:nwse-resize;z-index:2;touch-action:none;';
   let resizing = false, rsx = 0, rsy = 0, rsw = 0, rsh = 0;
   resizer.addEventListener('dblclick', () => {
     el.style.width = ''; el.style.height = '';
@@ -142,6 +145,7 @@ export function showMedia(
     resizer.setPointerCapture(e.pointerId);
     resizing = true; rsx = e.clientX; rsy = e.clientY;
     rsw = el.offsetWidth; rsh = el.offsetHeight;
+    onDragStart?.();
   });
   window.addEventListener('pointermove', (e) => {
     if (!resizing) return;
@@ -169,7 +173,9 @@ export function showMedia(
     const audio = el.querySelector('audio');
     if (audio) { audio.style.width = (dw - 16) + 'px'; }
   });
-  window.addEventListener('pointerup', () => { resizing = false; });
+  window.addEventListener('pointerup', () => {
+    if (resizing) { resizing = false; onDragEnd?.(); }
+  });
   el.appendChild(resizer);
 
   container.appendChild(el);
@@ -184,6 +190,7 @@ export function showMedia(
     e.preventDefault(); e.stopPropagation();
     handle.setPointerCapture(e.pointerId);
     dragging = true; sx = e.clientX; sy = e.clientY; ox = ov.offsetX; oy = ov.offsetY;
+    onDragStart?.();
   });
   window.addEventListener('pointermove', (e) => {
     if (!dragging) return;
@@ -195,7 +202,9 @@ export function showMedia(
     sx = e.clientX; sy = e.clientY;
     ox = ov.offsetX; oy = ov.offsetY;
   });
-  window.addEventListener('pointerup', () => { dragging = false; });
+  window.addEventListener('pointerup', () => {
+    if (dragging) { dragging = false; onDragEnd?.(); }
+  });
 
   positionMedia(nodeId, getWorldPos);
 }

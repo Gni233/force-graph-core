@@ -13,11 +13,16 @@ import { createSidebar } from './ui-sidebar';
 import { createTabBar } from './ui-tabs';
 import { openFolder, restoreFolder, listFileTree, flatFilePaths, readGraphFile, writeGraphFile, deleteFile, renameFile } from './file-system';
 import { saveFolderHandle, loadFolderHandle, clearFolderHandle } from './folder-store';
+import { isCapacitor, openFolderMobile, listFilesMobile, readFileMobile, writeFileMobile, deleteFileMobile } from './fs-mobile';
+import { safePrompt } from './dialog';
+import { checkUpdate, UpdateInfo } from './update-checker';
+import { showUpdateDialog } from './update-dialog';
 import { DEMO_DATA } from './demo-data';
 import { BlurFilter, Graphics } from 'pixi.js';
 import { createThresholdFilter } from './pixi-fluid';
 import { showMedia, positionMedia, hideMedia, isExpanded, clearAllMedia } from './media-nodes';
-(window as any).__triggerSave = () => {}; // 初始化占位，后面会被覆盖
+import { createSettingsPanel } from './settings-panel';
+(window as any).__triggerSave = () => {};
 import { createPixiApp, PixiLayers } from './pixi-app';
 import { createNodeSprite, updateNodePosition, applyNodeVisual, NodeSprite, NodeVisualState } from './pixi-nodes';
 import { updateEdges } from './pixi-edges';
@@ -46,9 +51,42 @@ async function main() {
   // 玻璃效果 CSS 片段
   const glassCSS = 'background:rgba(40,42,48,0.65);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border:1px solid rgba(255,255,255,0.08);border-radius:8px;color:#d0d0d0;';
 
+  // --- 窗口控制按钮（最小化 / 最大化 / 关闭）---
+  const winCtrls = document.createElement('div');
+  winCtrls.style.cssText = 'position:absolute;top:4px;right:6px;z-index:200;display:flex;gap:4px;';
+  appShell.appendChild(winCtrls);
+
+  function makeWinBtn(label: string, hoverBg: string) {
+    const btn = document.createElement('button');
+    btn.textContent = label;
+    btn.style.cssText = `width:30px;height:26px;border:none;${glassCSS}display:flex;align-items:center;justify-content:center;font-size:13px;line-height:1;cursor:pointer;padding:0;transition:background 0.15s;border-radius:6px;`;
+    btn.addEventListener('mouseenter', () => { btn.style.background = hoverBg; });
+    btn.addEventListener('mouseleave', () => { btn.style.background = 'rgba(40,42,48,0.65)'; });
+    return btn;
+  }
+
+  const btnMin = makeWinBtn('\u2500', 'rgba(255,255,255,0.12)'); // ─
+  const btnMax = makeWinBtn('\u25A1', 'rgba(255,255,255,0.12)'); // □
+  const btnClose = makeWinBtn('\u2715', 'rgba(232,68,68,0.85)'); // ✕
+
+  const isElectron = !!(window as any).electronAPI;
+  if (isElectron) {
+    const api = (window as any).electronAPI;
+    btnMin.addEventListener('click', () => api.minimizeWindow());
+    btnMax.addEventListener('click', () => api.maximizeWindow());
+    btnClose.addEventListener('click', () => api.closeWindow());
+    api.onMaximizeChange((maximized: boolean) => {
+      btnMax.textContent = maximized ? '\u25A3' : '\u25A1'; // ▣ / □
+    });
+  }
+
+  winCtrls.appendChild(btnMin);
+  winCtrls.appendChild(btnMax);
+  winCtrls.appendChild(btnClose);
+
   // --- 浮动顶栏（标签 + 搜索 + 操作）---
   const floatingTop = document.createElement('div');
-  floatingTop.style.cssText = `position:absolute;left:248px;top:6px;right:6px;z-index:10;display:flex;flex-direction:column;gap:4px;padding:4px 8px 6px 8px;${glassCSS}`;
+  floatingTop.style.cssText = `position:absolute;left:248px;top:6px;right:146px;z-index:10;display:flex;flex-direction:column;gap:4px;padding:4px 8px 6px 8px;${glassCSS}`;
   appShell.appendChild(floatingTop);
 
   // --- 标签栏 ---
@@ -119,7 +157,7 @@ async function main() {
   // --- 设置折叠区 ---
   const settingsDet = document.createElement('details');
   const settingsSum = document.createElement('summary');
-  settingsSum.textContent = '设置';
+  settingsSum.textContent = '图区设置';
   settingsDet.appendChild(settingsSum);
   const setDiv = document.createElement('div');
   setDiv.style.cssText = 'padding:4px 0;';
@@ -149,9 +187,15 @@ async function main() {
   let openTabs: string[] = [];
   let activeTab = 'demo';
   let fileSystemMountPath: string | null = null; // Electron 模式下的文件夹路径
+  const capApp = isCapacitor();
 
   // 存储适配器：所有图统一走 localStorage
   const readGraphData = async (fileName: string): Promise<GraphData | null> => {
+    // Capacitor 模式：从应用数据目录读
+    if (capApp && fileSystemMountPath && fileName !== 'demo') {
+      const data = await readFileMobile(fileName);
+      if (data) return data;
+    }
     // Electron 模式：从挂载目录读文件
     if (fileSystemMountPath && fileName !== 'demo') {
       try {
@@ -167,6 +211,11 @@ async function main() {
   const writeGraphData = async (fileName: string, data: GraphData): Promise<void> => {
     const store = createStorage(fileName);
     await store.writeData(data);
+    // Capacitor 模式：写入应用数据目录
+    if (capApp && fileSystemMountPath && fileName !== 'demo') {
+      await writeFileMobile(fileName, data);
+      return;
+    }
     // Electron 模式：同步到挂载目录
     if (fileSystemMountPath && fileName !== 'demo') {
       try {
@@ -198,13 +247,19 @@ async function main() {
   const sidebar = createSidebar(appShell, {
     onSelectFile: async (path) => { await openTab(path); },
     onNewFile: async (path) => {
-      const empty: GraphData = { nodes: [], edges: [], groups: [], settings: { ...DEFAULT_SETTINGS } };
-      await writeGraphFile(path, empty);
+      const presetSettings = Object.keys(presetDefaults).length > 0 ? { ...DEFAULT_SETTINGS, ...presetDefaults } : { ...DEFAULT_SETTINGS };
+      const empty: GraphData = { nodes: [], edges: [], groups: [], settings: presetSettings };
+      if (capApp) {
+        await writeFileMobile(path, empty);
+      } else {
+        await writeGraphFile(path, empty);
+      }
       await writeGraphData(path, empty);
       await openTab(path);
     },
     onDeleteFile: async (path) => {
-      await deleteFile(path);
+      if (capApp) { await deleteFileMobile(path); }
+      else { await deleteFile(path); }
       openTabs = openTabs.filter(t => t !== path);
       if (activeTab === path) {
         activeTab = openTabs.length > 0 ? openTabs[openTabs.length - 1] : 'demo';
@@ -215,9 +270,14 @@ async function main() {
       await refreshFileTree();
     },
     onRenameFile: async (oldPath, newName) => {
-      await renameFile(oldPath, newName);
-      const parts = oldPath.split('/'); parts[parts.length - 1] = newName.endsWith('.json') ? newName : newName + '.json';
-      const newPath = parts.join('/');
+      const newPath = newName.endsWith('.json') ? newName : newName + '.json';
+      if (capApp) {
+        const content = await readFileMobile(oldPath);
+        await writeFileMobile(newPath, content || { nodes: [], edges: [], groups: [] });
+        await deleteFileMobile(oldPath);
+      } else {
+        await renameFile(oldPath, newName);
+      }
       if (activeTab === oldPath) {
         openTabs = openTabs.map(t => t === oldPath ? newPath : t);
         await loadGraphData(newPath);
@@ -226,34 +286,26 @@ async function main() {
       }
       await refreshFileTree();
     },
-    onOpenFolder: async () => {
-      // Electron 模式：原生对话框
-      const ea = (window as any).electronAPI;
-      if (ea?.openFolder) {
-        const folderPath = await ea.openFolder();
-        if (folderPath) {
-          localStorage.setItem('fg-folder-path', folderPath);
-          sidebar.setFolderPath(folderPath);
-          fileSystemMountPath = folderPath;
-          await refreshFileTree();
-        }
-        return;
-      }
-      // 浏览器模式：File System Access API
-      const h = await openFolder();
-      if (h) { await saveFolderHandle(h); sidebar.setFolderPath(h.name); await refreshFileTree(); }
-    },
+    onOpenFolder: () => {}, // 已迁移到设置面板
     onCopyFile: async (path) => {
       const base = path.replace(/\.json$/, '');
       let n = 2; let newPath = base + ' ' + n + '.json';
-      while (flatFilePaths(await listFileTree()).includes(newPath)) { n++; newPath = base + ' ' + n + '.json'; }
+      if (capApp) {
+        const files = await listFilesMobile();
+        while (files.some(f => f.name === newPath)) { n++; newPath = base + ' ' + n + '.json'; }
+      } else {
+        while (flatFilePaths(await listFileTree()).includes(newPath)) { n++; newPath = base + ' ' + n + '.json'; }
+      }
       const content = await readGraphData(path);
       await writeGraphData(newPath, content || { nodes: [], edges: [], groups: [], settings: { ...DEFAULT_SETTINGS } });
       await refreshFileTree();
     },
-    onNewFolder: async (path) => {
-      await writeGraphFile(path + '/.gitkeep', { nodes: [], edges: [], groups: [], settings: { ...DEFAULT_SETTINGS } });
-      await deleteFile(path + '/.gitkeep');
+    onNewFolder: async (_path) => {
+      // Capacitor 没有子目录概念，跳过
+      if (!capApp) {
+        await writeGraphFile(_path + '/.gitkeep', { nodes: [], edges: [], groups: [], settings: { ...DEFAULT_SETTINGS } });
+        await deleteFile(_path + '/.gitkeep');
+      }
       await refreshFileTree();
     },
     onMoveFile: async (src, dstDir) => {
@@ -261,16 +313,25 @@ async function main() {
       const dstPath = dstDir + '/' + name;
       const content = await readGraphData(src);
       await writeGraphData(dstPath, content || { nodes: [], edges: [], groups: [] });
-      await deleteFile(src);
+      if (capApp) { await deleteFileMobile(src); }
+      else { await deleteFile(src); }
       if (activeTab === src) { await loadGraphData(dstPath); }
       await refreshFileTree();
     },
+    onApplyPreset: () => { settingsPanel.show(); },
+    onResetPresets: () => { settingsPanel.show(); },
   });
 
   // 侧边栏玻璃效果
   sidebar.sidebar.style.cssText = `position:absolute;left:2px;top:6px;bottom:6px;z-index:10;width:240px;min-width:180px;display:flex;flex-direction:column;font-size:0.85em;overflow:hidden;${glassCSS}`;
 
   const refreshFileTree = async () => {
+    // Capacitor 模式：从应用数据目录列出文件
+    if (capApp && fileSystemMountPath) {
+      const files = await listFilesMobile();
+      sidebar.updateFileTree(files, activeTab);
+      return;
+    }
     // Electron 模式：直接用 fs 读目录
     const ea = (window as any).electronAPI;
     if (fileSystemMountPath && ea?.readDir) {
@@ -305,8 +366,6 @@ async function main() {
     // 清除旧节点精灵
     if (pixi) { pixi.nodeLayer.removeChildren(); pixi.edgeLayer.removeChildren(); pixi.blobLayer.removeChildren(); }
     nodeSprites.clear(); clearGridCache();
-    const tree = await listFileTree();
-    sidebar.updateFileTree(tree, fileName);
     const saved = await readGraphData(fileName);
     if (fileName === 'demo') {
       // demo 始终从最新 DEMO_DATA 强制重建
@@ -393,11 +452,12 @@ async function main() {
   }
 
   async function createNewTab() {
-    const name = prompt('输入新页面名称:');
+    const name = await safePrompt('输入新页面名称:');
     if (!name) return;
     const fileName = name.endsWith('.json') ? name : name + '.json';
     if (openTabs.includes(fileName)) { await switchTab(fileName); return; }
-    const empty: GraphData = { nodes: [], edges: [], groups: [], settings: { ...DEFAULT_SETTINGS } };
+    const presetSettings = Object.keys(presetDefaults).length > 0 ? { ...DEFAULT_SETTINGS, ...presetDefaults } : { ...DEFAULT_SETTINGS };
+    const empty: GraphData = { nodes: [], edges: [], groups: [], settings: presetSettings };
     await writeGraphData(fileName, empty);
     graph.nodes = []; graph.edges = []; graph.groups = [];
     graph.settings = { ...DEFAULT_SETTINGS };
@@ -728,30 +788,270 @@ async function main() {
     draw, getInitSim: () => simManager.initSim, getSaveData: () => saveNow, graph,
     getGraphTheme: () => graphTheme,
     setGraphTheme: v => { graphTheme = v; applyTheme(getTheme(v)); saveNow(); draw(); },
-    getDefaultValues: () => ({
-      defaultLinkDistance: DEFAULT_SETTINGS.linkDist, defaultFontSize: DEFAULT_SETTINGS.labelSize,
-      defaultCharge: DEFAULT_SETTINGS.charge, defaultLinkStrength: DEFAULT_SETTINGS.linkStr,
-      defaultCollideRadius: DEFAULT_SETTINGS.collideR, defaultCenterStrength: DEFAULT_SETTINGS.centerS,
-      defaultGroupBound: DEFAULT_SETTINGS.groupBound, defaultHeatingTime: DEFAULT_SETTINGS.heatingTime,
-      defaultAlphaTarget: DEFAULT_SETTINGS.alphaTarget, defaultEditPanelOpacity: DEFAULT_SETTINGS.editPanelOpacity,
-      defaultUseRAFL: DEFAULT_SETTINGS.useRAFL, defaultFocusMode: DEFAULT_SETTINGS.focusMode,
-      defaultFluidAppearance: DEFAULT_SETTINGS.fluidAppearance,
-      defaultGlowAppearance: DEFAULT_SETTINGS.glowAppearance,
-      defaultGravityGrid: DEFAULT_SETTINGS.gravityGrid,
-      defaultGridWidth: DEFAULT_SETTINGS.gridWidth,
-      defaultNodeExpand: DEFAULT_SETTINGS.nodeExpand, defaultLineExpand: DEFAULT_SETTINGS.lineExpand,
-      defaultShowGLabels: DEFAULT_SETTINGS.showGLabels, defaultGlMin: DEFAULT_SETTINGS.glMin,
-      defaultGlMax: DEFAULT_SETTINGS.glMax, defaultGridVis: DEFAULT_SETTINGS.gridVis,
-      defaultAxisVis: DEFAULT_SETTINGS.axisVis, defaultAxisTicks: DEFAULT_SETTINGS.axisTicks,
-      defaultGridSpacing: DEFAULT_SETTINGS.gridSp, defaultAr: DEFAULT_SETTINGS.ar,
-      defaultGraphTheme: DEFAULT_SETTINGS.graphTheme,
-    }),
+    getDefaultValues: () => {
+      const preset = presetDefaults as Record<string, number | boolean | string>;
+      return {
+        defaultLinkDistance: (preset.linkDist as number) ?? DEFAULT_SETTINGS.linkDist,
+        defaultFontSize: (preset.labelSize as number) ?? DEFAULT_SETTINGS.labelSize,
+        defaultCharge: (preset.charge as number) ?? DEFAULT_SETTINGS.charge,
+        defaultLinkStrength: (preset.linkStr as number) ?? DEFAULT_SETTINGS.linkStr,
+        defaultCollideRadius: (preset.collideR as number) ?? DEFAULT_SETTINGS.collideR,
+        defaultCenterStrength: (preset.centerS as number) ?? DEFAULT_SETTINGS.centerS,
+        defaultGroupBound: (preset.groupBound as number) ?? DEFAULT_SETTINGS.groupBound,
+        defaultHeatingTime: (preset.heatingTime as number) ?? DEFAULT_SETTINGS.heatingTime,
+        defaultAlphaTarget: (preset.alphaTarget as number) ?? DEFAULT_SETTINGS.alphaTarget,
+        defaultEditPanelOpacity: (preset.editPanelOpacity as number) ?? DEFAULT_SETTINGS.editPanelOpacity,
+        defaultUseRAFL: (preset.useRAFL as boolean) ?? DEFAULT_SETTINGS.useRAFL,
+        defaultFocusMode: (preset.focusMode as boolean) ?? DEFAULT_SETTINGS.focusMode,
+        defaultFluidAppearance: (preset.fluidAppearance as boolean) ?? DEFAULT_SETTINGS.fluidAppearance,
+        defaultGlowAppearance: (preset.glowAppearance as boolean) ?? DEFAULT_SETTINGS.glowAppearance,
+        defaultGravityGrid: (preset.gravityGrid as boolean) ?? DEFAULT_SETTINGS.gravityGrid,
+        defaultGridWidth: (preset.gridWidth as number) ?? DEFAULT_SETTINGS.gridWidth,
+        defaultNodeExpand: (preset.nodeExpand as number) ?? DEFAULT_SETTINGS.nodeExpand,
+        defaultLineExpand: (preset.lineExpand as number) ?? DEFAULT_SETTINGS.lineExpand,
+        defaultShowGLabels: (preset.showGLabels as boolean) ?? DEFAULT_SETTINGS.showGLabels,
+        defaultGlMin: (preset.glMin as number) ?? DEFAULT_SETTINGS.glMin,
+        defaultGlMax: (preset.glMax as number) ?? DEFAULT_SETTINGS.glMax,
+        defaultGridVis: (preset.gridVis as boolean) ?? DEFAULT_SETTINGS.gridVis,
+        defaultAxisVis: (preset.axisVis as boolean) ?? DEFAULT_SETTINGS.axisVis,
+        defaultAxisTicks: (preset.axisTicks as boolean) ?? DEFAULT_SETTINGS.axisTicks,
+        defaultGridSpacing: (preset.gridSp as number) ?? DEFAULT_SETTINGS.gridSp,
+        defaultAr: (preset.ar as number) ?? DEFAULT_SETTINGS.ar,
+        defaultGraphTheme: (preset.graphTheme as string) ?? DEFAULT_SETTINGS.graphTheme,
+      };
+    },
     getFocusMode: () => focusMode, setFocusMode: v => { focusMode = v; },
     getFluidAppearance: () => fluidAppearance, setFluidAppearance: v => { fluidAppearance = v; draw(); },
     getGlowAppearance: () => glowAppearance, setGlowAppearance: v => { glowAppearance = v; draw(); },
     getGravityGrid: () => gravityGrid, setGravityGrid: v => { gravityGrid = v; draw(); },
     getGridWidth: () => gridWidth, setGridWidth: v => { gridWidth = v; },
   });
+  // 图区设置保留在底部（滑块/复选框直接修改当前图）
+
+  // 设置面板 + 预设
+  const SETTING_PRESETS_KEY = `fg-setting-presets`;
+  let settingPresets: { name: string; values: Partial<GraphSettings> }[] = [];
+  try { settingPresets = JSON.parse(localStorage.getItem(SETTING_PRESETS_KEY) || '[]'); } catch {}
+  const saveSettingPresets = () => localStorage.setItem(SETTING_PRESETS_KEY, JSON.stringify(settingPresets));
+
+  const getAllSettingValues = (): Partial<GraphSettings> => ({
+    linkDist, labelSize, charge, linkStr, collideR, centerS, groupBound,
+    heatingTime, alphaTarget, editPanelOpacity, useRAFL, nodeExpand, lineExpand,
+    showGLabels, glMin, glMax, gridVis, axisVis, axisTicks, gridSp, gridWidth,
+    ar, graphTheme, focusMode, fluidAppearance, glowAppearance, gravityGrid,
+  });
+
+  const applySettingValues = (vals: Partial<GraphSettings>) => {
+    for (const [k, v] of Object.entries(vals)) {
+      if (k === 'linkDist') linkDist = v as number;
+      else if (k === 'labelSize') labelSize = v as number;
+      else if (k === 'charge') charge = v as number;
+      else if (k === 'linkStr') linkStr = v as number;
+      else if (k === 'collideR') collideR = v as number;
+      else if (k === 'centerS') centerS = v as number;
+      else if (k === 'groupBound') groupBound = v as number;
+      else if (k === 'heatingTime') heatingTime = v as number;
+      else if (k === 'alphaTarget') alphaTarget = v as number;
+      else if (k === 'editPanelOpacity') { editPanelOpacity = v as number; updateOpacity(editPanelOpacity); }
+      else if (k === 'useRAFL') useRAFL = v as boolean;
+      else if (k === 'nodeExpand') nodeExpand = v as number;
+      else if (k === 'lineExpand') lineExpand = v as number;
+      else if (k === 'showGLabels') showGLabels = v as boolean;
+      else if (k === 'glMin') glMin = v as number;
+      else if (k === 'glMax') glMax = v as number;
+      else if (k === 'gridVis') gridVis = v as boolean;
+      else if (k === 'axisVis') axisVis = v as boolean;
+      else if (k === 'axisTicks') axisTicks = v as boolean;
+      else if (k === 'gridSp') gridSp = v as number;
+      else if (k === 'gridWidth') gridWidth = v as number;
+      else if (k === 'ar') ar = v as number;
+      else if (k === 'graphTheme') { graphTheme = v as string; applyTheme(getTheme(graphTheme)); }
+      else if (k === 'focusMode') focusMode = v as boolean;
+      else if (k === 'fluidAppearance') fluidAppearance = v as boolean;
+      else if (k === 'glowAppearance') glowAppearance = v as boolean;
+      else if (k === 'gravityGrid') gravityGrid = v as boolean;
+    }
+  };
+
+  // 默认预设（新建图和"恢复默认"时采用）
+  const PRESET_DEFAULT_KEY = 'fg-preset-default';
+  let presetDefaults: Partial<GraphSettings> = {};
+  try { presetDefaults = JSON.parse(localStorage.getItem(PRESET_DEFAULT_KEY) || '{}'); } catch {}
+
+  // 预设编辑面板（独立于图区设置，读写 presetDefaults）
+  const presetSetDiv = document.createElement('div');
+  presetSetDiv.style.cssText = 'padding:4px 0;';
+  const presetSettingsUI = buildSettings(presetSetDiv, {
+    getLinkDist: () => (presetDefaults.linkDist as number) ?? DEFAULT_SETTINGS.linkDist,
+    setLinkDist: v => { presetDefaults.linkDist = v; localStorage.setItem(PRESET_DEFAULT_KEY, JSON.stringify(presetDefaults)); },
+    getLabelSize: () => (presetDefaults.labelSize as number) ?? DEFAULT_SETTINGS.labelSize,
+    setLabelSize: v => { presetDefaults.labelSize = v; localStorage.setItem(PRESET_DEFAULT_KEY, JSON.stringify(presetDefaults)); },
+    getCharge: () => (presetDefaults.charge as number) ?? DEFAULT_SETTINGS.charge,
+    setCharge: v => { presetDefaults.charge = v; localStorage.setItem(PRESET_DEFAULT_KEY, JSON.stringify(presetDefaults)); },
+    getLinkStr: () => (presetDefaults.linkStr as number) ?? DEFAULT_SETTINGS.linkStr,
+    setLinkStr: v => { presetDefaults.linkStr = v; localStorage.setItem(PRESET_DEFAULT_KEY, JSON.stringify(presetDefaults)); },
+    getCollideR: () => (presetDefaults.collideR as number) ?? DEFAULT_SETTINGS.collideR,
+    setCollideR: v => { presetDefaults.collideR = v; localStorage.setItem(PRESET_DEFAULT_KEY, JSON.stringify(presetDefaults)); },
+    getCenterS: () => (presetDefaults.centerS as number) ?? DEFAULT_SETTINGS.centerS,
+    setCenterS: v => { presetDefaults.centerS = v; localStorage.setItem(PRESET_DEFAULT_KEY, JSON.stringify(presetDefaults)); },
+    getGroupBound: () => (presetDefaults.groupBound as number) ?? DEFAULT_SETTINGS.groupBound,
+    setGroupBound: v => { presetDefaults.groupBound = v; localStorage.setItem(PRESET_DEFAULT_KEY, JSON.stringify(presetDefaults)); },
+    getHeatingTime: () => (presetDefaults.heatingTime as number) ?? DEFAULT_SETTINGS.heatingTime,
+    setHeatingTime: v => { presetDefaults.heatingTime = v; localStorage.setItem(PRESET_DEFAULT_KEY, JSON.stringify(presetDefaults)); },
+    getAlphaTarget: () => (presetDefaults.alphaTarget as number) ?? DEFAULT_SETTINGS.alphaTarget,
+    setAlphaTarget: v => { presetDefaults.alphaTarget = v; localStorage.setItem(PRESET_DEFAULT_KEY, JSON.stringify(presetDefaults)); },
+    getEditPanelOpacity: () => (presetDefaults.editPanelOpacity as number) ?? DEFAULT_SETTINGS.editPanelOpacity,
+    setEditPanelOpacity: v => { presetDefaults.editPanelOpacity = v; localStorage.setItem(PRESET_DEFAULT_KEY, JSON.stringify(presetDefaults)); },
+    getUseRAFL: () => (presetDefaults.useRAFL as boolean) ?? DEFAULT_SETTINGS.useRAFL,
+    setUseRAFL: v => { presetDefaults.useRAFL = v; localStorage.setItem(PRESET_DEFAULT_KEY, JSON.stringify(presetDefaults)); },
+    getNodeExpand: () => (presetDefaults.nodeExpand as number) ?? DEFAULT_SETTINGS.nodeExpand,
+    setNodeExpand: v => { presetDefaults.nodeExpand = v; localStorage.setItem(PRESET_DEFAULT_KEY, JSON.stringify(presetDefaults)); },
+    getLineExpand: () => (presetDefaults.lineExpand as number) ?? DEFAULT_SETTINGS.lineExpand,
+    setLineExpand: v => { presetDefaults.lineExpand = v; localStorage.setItem(PRESET_DEFAULT_KEY, JSON.stringify(presetDefaults)); },
+    getShowGLabels: () => (presetDefaults.showGLabels as boolean) ?? DEFAULT_SETTINGS.showGLabels,
+    setShowGLabels: v => { presetDefaults.showGLabels = v; localStorage.setItem(PRESET_DEFAULT_KEY, JSON.stringify(presetDefaults)); },
+    getGlMin: () => (presetDefaults.glMin as number) ?? DEFAULT_SETTINGS.glMin,
+    setGlMin: v => { presetDefaults.glMin = v; localStorage.setItem(PRESET_DEFAULT_KEY, JSON.stringify(presetDefaults)); },
+    getGlMax: () => (presetDefaults.glMax as number) ?? DEFAULT_SETTINGS.glMax,
+    setGlMax: v => { presetDefaults.glMax = v; localStorage.setItem(PRESET_DEFAULT_KEY, JSON.stringify(presetDefaults)); },
+    getGridVis: () => (presetDefaults.gridVis as boolean) ?? DEFAULT_SETTINGS.gridVis,
+    setGridVis: v => { presetDefaults.gridVis = v; localStorage.setItem(PRESET_DEFAULT_KEY, JSON.stringify(presetDefaults)); },
+    getAxisVis: () => (presetDefaults.axisVis as boolean) ?? DEFAULT_SETTINGS.axisVis,
+    setAxisVis: v => { presetDefaults.axisVis = v; localStorage.setItem(PRESET_DEFAULT_KEY, JSON.stringify(presetDefaults)); },
+    getAxisTicks: () => (presetDefaults.axisTicks as boolean) ?? DEFAULT_SETTINGS.axisTicks,
+    setAxisTicks: v => { presetDefaults.axisTicks = v; localStorage.setItem(PRESET_DEFAULT_KEY, JSON.stringify(presetDefaults)); },
+    getGridSp: () => (presetDefaults.gridSp as number) ?? DEFAULT_SETTINGS.gridSp,
+    setGridSp: v => { presetDefaults.gridSp = v; localStorage.setItem(PRESET_DEFAULT_KEY, JSON.stringify(presetDefaults)); },
+    getAr: () => (presetDefaults.ar as number) ?? DEFAULT_SETTINGS.ar,
+    setAr: v => { presetDefaults.ar = v; localStorage.setItem(PRESET_DEFAULT_KEY, JSON.stringify(presetDefaults)); },
+    getSimulation: getSim, getGw: () => gw, getGh: () => gh,
+    draw: () => {}, getInitSim: () => () => {}, getSaveData: () => async () => {},
+    graph, setGraphTheme: v => { presetDefaults.graphTheme = v; localStorage.setItem(PRESET_DEFAULT_KEY, JSON.stringify(presetDefaults)); },
+    getGraphTheme: () => (presetDefaults.graphTheme as string) ?? DEFAULT_SETTINGS.graphTheme,
+    getDefaultValues: () => ({
+      defaultLinkDistance: DEFAULT_SETTINGS.linkDist,
+      defaultFontSize: DEFAULT_SETTINGS.labelSize,
+      defaultCharge: DEFAULT_SETTINGS.charge,
+      defaultLinkStrength: DEFAULT_SETTINGS.linkStr,
+      defaultCollideRadius: DEFAULT_SETTINGS.collideR,
+      defaultCenterStrength: DEFAULT_SETTINGS.centerS,
+      defaultGroupBound: DEFAULT_SETTINGS.groupBound,
+      defaultHeatingTime: DEFAULT_SETTINGS.heatingTime,
+      defaultAlphaTarget: DEFAULT_SETTINGS.alphaTarget,
+      defaultEditPanelOpacity: DEFAULT_SETTINGS.editPanelOpacity,
+      defaultUseRAFL: DEFAULT_SETTINGS.useRAFL,
+      defaultFocusMode: DEFAULT_SETTINGS.focusMode,
+      defaultFluidAppearance: DEFAULT_SETTINGS.fluidAppearance,
+      defaultGlowAppearance: DEFAULT_SETTINGS.glowAppearance,
+      defaultGravityGrid: DEFAULT_SETTINGS.gravityGrid,
+      defaultGridWidth: DEFAULT_SETTINGS.gridWidth,
+      defaultNodeExpand: DEFAULT_SETTINGS.nodeExpand,
+      defaultLineExpand: DEFAULT_SETTINGS.lineExpand,
+      defaultShowGLabels: DEFAULT_SETTINGS.showGLabels,
+      defaultGlMin: DEFAULT_SETTINGS.glMin,
+      defaultGlMax: DEFAULT_SETTINGS.glMax,
+      defaultGridVis: DEFAULT_SETTINGS.gridVis,
+      defaultAxisVis: DEFAULT_SETTINGS.axisVis,
+      defaultAxisTicks: DEFAULT_SETTINGS.axisTicks,
+      defaultGridSpacing: DEFAULT_SETTINGS.gridSp,
+      defaultAr: DEFAULT_SETTINGS.ar,
+      defaultGraphTheme: DEFAULT_SETTINGS.graphTheme,
+    }),
+    getFocusMode: () => (presetDefaults.focusMode as boolean) ?? DEFAULT_SETTINGS.focusMode,
+    setFocusMode: v => { presetDefaults.focusMode = v; localStorage.setItem(PRESET_DEFAULT_KEY, JSON.stringify(presetDefaults)); },
+    getFluidAppearance: () => (presetDefaults.fluidAppearance as boolean) ?? DEFAULT_SETTINGS.fluidAppearance,
+    setFluidAppearance: v => { presetDefaults.fluidAppearance = v; localStorage.setItem(PRESET_DEFAULT_KEY, JSON.stringify(presetDefaults)); },
+    getGlowAppearance: () => (presetDefaults.glowAppearance as boolean) ?? DEFAULT_SETTINGS.glowAppearance,
+    setGlowAppearance: v => { presetDefaults.glowAppearance = v; localStorage.setItem(PRESET_DEFAULT_KEY, JSON.stringify(presetDefaults)); },
+    getGravityGrid: () => (presetDefaults.gravityGrid as boolean) ?? DEFAULT_SETTINGS.gravityGrid,
+    setGravityGrid: v => { presetDefaults.gravityGrid = v; localStorage.setItem(PRESET_DEFAULT_KEY, JSON.stringify(presetDefaults)); },
+    getGridWidth: () => (presetDefaults.gridWidth as number) ?? DEFAULT_SETTINGS.gridWidth,
+    setGridWidth: v => { presetDefaults.gridWidth = v; localStorage.setItem(PRESET_DEFAULT_KEY, JSON.stringify(presetDefaults)); },
+  });
+
+  const settingsPanel = createSettingsPanel(document.body, presetSetDiv, {
+    onSavePreset: (name) => {
+      const vals = getAllSettingValues();
+      if (name === '默认') {
+        // 保存为"默认"预设 → 同时更新 presetDefaults
+        presetDefaults = vals;
+        localStorage.setItem(PRESET_DEFAULT_KEY, JSON.stringify(vals));
+      }
+      const exists = settingPresets.findIndex(p => p.name === name);
+      if (exists >= 0) { if (!confirm(`覆盖 "${name}"？`)) return; settingPresets.splice(exists, 1); }
+      settingPresets.push({ name, values: vals });
+      saveSettingPresets();
+    },
+    onLoadPreset: (name) => {
+      if (name === '默认') {
+        applySettingValues(presetDefaults);
+      } else {
+        const p = settingPresets.find(p => p.name === name);
+        if (p) { applySettingValues(p.values); }
+      }
+      settingsUI.updateInfo(); scheduleSave(); simManager.initSim(); draw();
+    },
+    onDeletePreset: (name) => {
+      settingPresets = settingPresets.filter(p => p.name !== name);
+      saveSettingPresets();
+    },
+    onResetDefaults: () => {
+      // 仅重置预设默认，不影响当前图
+      presetDefaults = {
+        linkDist: DEFAULT_SETTINGS.linkDist, labelSize: DEFAULT_SETTINGS.labelSize,
+        charge: DEFAULT_SETTINGS.charge, linkStr: DEFAULT_SETTINGS.linkStr,
+        collideR: DEFAULT_SETTINGS.collideR, centerS: DEFAULT_SETTINGS.centerS,
+        groupBound: DEFAULT_SETTINGS.groupBound, heatingTime: DEFAULT_SETTINGS.heatingTime,
+        alphaTarget: DEFAULT_SETTINGS.alphaTarget, editPanelOpacity: DEFAULT_SETTINGS.editPanelOpacity,
+        useRAFL: DEFAULT_SETTINGS.useRAFL, nodeExpand: DEFAULT_SETTINGS.nodeExpand,
+        lineExpand: DEFAULT_SETTINGS.lineExpand, showGLabels: DEFAULT_SETTINGS.showGLabels,
+        glMin: DEFAULT_SETTINGS.glMin, glMax: DEFAULT_SETTINGS.glMax,
+        gridVis: DEFAULT_SETTINGS.gridVis, axisVis: DEFAULT_SETTINGS.axisVis,
+        axisTicks: DEFAULT_SETTINGS.axisTicks, gridSp: DEFAULT_SETTINGS.gridSp,
+        gridWidth: DEFAULT_SETTINGS.gridWidth, ar: DEFAULT_SETTINGS.ar,
+        graphTheme: DEFAULT_SETTINGS.graphTheme, focusMode: DEFAULT_SETTINGS.focusMode,
+        fluidAppearance: false, glowAppearance: false, gravityGrid: false,
+      };
+      localStorage.setItem(PRESET_DEFAULT_KEY, JSON.stringify(presetDefaults));
+      settingsUI.updateInfo(); scheduleSave(); simManager.initSim(); draw();
+    },
+    getPresets: () => settingPresets,
+    onOpenFolder: async () => {
+      if (capApp) {
+        const dir = await openFolderMobile();
+        if (dir) {
+          fileSystemMountPath = dir;
+          await refreshFileTree();
+        }
+        return;
+      }
+      const ea = (window as any).electronAPI;
+      if (ea?.openFolder) {
+        const folderPath = await ea.openFolder();
+        if (folderPath) {
+          ea.configWrite({ folderPath });
+          fileSystemMountPath = folderPath;
+          await refreshFileTree();
+        }
+        return;
+      }
+      const h = await openFolder();
+      if (h) { await saveFolderHandle(h); fileSystemMountPath = h.name; await refreshFileTree(); }
+    },
+    getFolderPath: () => fileSystemMountPath || '（未选择）',
+    getAutoUpdate: () => localStorage.getItem('fg-auto-update') === 'true',
+    onToggleAutoUpdate: (val) => { localStorage.setItem('fg-auto-update', val ? 'true' : 'false'); },
+    onCheckUpdate: async () => {
+      const info = await checkUpdate();
+      if (!info) { alert('当前已是最新版本'); return; }
+      showUpdateDialog(info, () => {
+        const ea = (window as any).electronAPI;
+        if (ea?.openExternal) { ea.openExternal(info.htmlUrl); }
+        else { window.open(info.htmlUrl, '_blank'); }
+      });
+    },
+  });
+
   updateInfoRef.current = settingsUI.updateInfo;
   updateSelectsRef.current = () => {};
 
@@ -1469,7 +1769,7 @@ async function main() {
           mi.onmouseleave = () => mi.style.background = '';
           mi.onclick = () => { fn(); menu.remove(); }; return mi;
         };
-        menu.appendChild(mk('重命名', () => { const nn = prompt('新名称：', l.name); if (nn) { const oldActive = activeMode === l.name; l.name = nn; if (oldActive) activeMode = nn; saveLayouts(); renderModeBar(); } }));
+        menu.appendChild(mk('重命名', async () => { const nn = await safePrompt('新名称：', l.name); if (nn) { const oldActive = activeMode === l.name; l.name = nn; if (oldActive) activeMode = nn; saveLayouts(); renderModeBar(); } }));
         menu.appendChild(mk('删除', () => { if (confirm(`删除 "${l.name}"？`)) { if (activeMode === l.name) applyLayoutMode('default'); layouts = layouts.filter(x => x !== l); saveLayouts(); renderModeBar(); } }));
         document.body.appendChild(menu);
         const close = () => { menu.remove(); document.removeEventListener('click', close); };
@@ -1481,7 +1781,7 @@ async function main() {
     const addBtn = document.createElement('span');
     addBtn.textContent = '+'; addBtn.title = '保存为布局';
     addBtn.style.cssText = 'font-size:0.75em;padding:1px 6px;cursor:pointer;border-radius:3px;border:1px solid rgba(255,255,255,0.18);';
-    addBtn.onclick = () => {
+    addBtn.onclick = async () => {
       // 如果在自定义布局模式，直接更新当前布局
       if (activeMode !== 'default' && activeMode !== 'tree' && activeMode !== 'category' && activeMode !== 'fullcat') {
         const l = layouts.find(x => x.name === activeMode);
@@ -1491,7 +1791,7 @@ async function main() {
           saveLayouts(); renderModeBar(); return;
         }
       }
-      const name = prompt('布局名称：');
+      const name = await safePrompt('布局名称：');
       if (!name) return;
       const exists = layouts.findIndex(l => l.name === name);
       if (exists >= 0) { if (!confirm(`覆盖 "${name}"？`)) return; layouts.splice(exists, 1); }
@@ -1580,17 +1880,17 @@ async function main() {
             const sp = pixi!.viewport.toScreen(n.x, n.y);
             const rect = pixi!.app.canvas.getBoundingClientRect();
             return { x: rect.left + sp.x, y: rect.top + sp.y };
-          });
+          }, () => { pixi!.viewport.pause = true; }, () => { pixi!.viewport.pause = false; });
           draw();
         }});
       }
       if (!node?.mediaType) {
-        items.push({ label: '设为图片', action: () => {
-          const url = prompt('图片 URL：');
+        items.push({ label: '设为图片', action: async () => {
+          const url = await safePrompt('图片 URL：');
           if (url) { const n = graph.nodes.find(n => n.id === id); if (n) { n.mediaType = 'image'; n.mediaUrl = url; scheduleSave(); } }
         }});
-        items.push({ label: '设为文档', action: () => {
-          const url = prompt('文档内容或 URL：');
+        items.push({ label: '设为文档', action: async () => {
+          const url = await safePrompt('文档内容或 URL：');
           if (url) { const n = graph.nodes.find(n => n.id === id); if (n) { n.mediaType = 'md'; n.mediaUrl = url; scheduleSave(); } }
         }});
       }
@@ -1719,20 +2019,26 @@ async function main() {
   renderTabs(openTabs, activeTab);
 
   // 尝试恢复文件夹
-  // Electron 模式：从 localStorage 读路径
-  const ea2 = (window as any).electronAPI;
-  if (ea2) {
-    const savedPath = localStorage.getItem('fg-folder-path');
-    if (savedPath && await ea2.exists(savedPath)) {
-      fileSystemMountPath = savedPath;
-      sidebar.setFolderPath(savedPath);
-      await refreshFileTree();
-    }
+  // Capacitor 模式：始终尝试恢复应用数据目录
+  if (capApp) {
+    fileSystemMountPath = 'graphs';
+    await refreshFileTree();
   } else {
-    const savedHandle = await loadFolderHandle();
-    if (savedHandle) {
-      const ok = await restoreFolder(savedHandle);
-      if (ok) { sidebar.setFolderPath(savedHandle.name); await refreshFileTree(); }
+    // Electron 模式：从 userData/config.json 读路径
+    const ea2 = (window as any).electronAPI;
+    if (ea2) {
+      const config = await ea2.configRead();
+      const savedPath = config.folderPath;
+      if (savedPath && await ea2.exists(savedPath)) {
+        fileSystemMountPath = savedPath;
+        await refreshFileTree();
+      }
+    } else {
+      const savedHandle = await loadFolderHandle();
+      if (savedHandle) {
+        const ok = await restoreFolder(savedHandle);
+        if (ok) { await refreshFileTree(); }
+      }
     }
   }
 
@@ -1756,6 +2062,19 @@ async function main() {
     if (cw > 0 && ch > 0) vp.position.set(cw / 2, ch / 2);
     draw();
   });
+
+  // 自动检查 GitHub 更新（延迟 3 秒，不阻塞启动）
+  setTimeout(async () => {
+    const autoUpdate = localStorage.getItem('fg-auto-update') === 'true';
+    if (!autoUpdate) return;
+    const info = await checkUpdate();
+    if (!info) return;
+    showUpdateDialog(info, () => {
+      const ea = (window as any).electronAPI;
+      if (ea?.openExternal) { ea.openExternal(info.htmlUrl); }
+      else { window.open(info.htmlUrl, '_blank'); }
+    });
+  }, 3000);
 }
 
 main().catch(console.error);

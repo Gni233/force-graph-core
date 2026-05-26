@@ -27,6 +27,7 @@ export async function createPixiApp(container: HTMLElement): Promise<PixiLayers>
   });
 
   container.appendChild(app.canvas);
+  app.canvas.style.touchAction = 'none'; // 移动端防止浏览器默认手势
 
   // pixi-viewport: zoom/pan/drag/wheel
   // 用 window 尺寸，因为同步 JS 阶段 container.clientWidth 可能是 0（未布局）

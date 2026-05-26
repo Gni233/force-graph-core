@@ -22,4 +22,20 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // 主题适配
   setTitlebarColor: (bgColor) => ipcRenderer.invoke('set-titlebar-color', bgColor),
+
+  // 窗口控制
+  minimizeWindow: () => ipcRenderer.send('window-minimize'),
+  maximizeWindow: () => ipcRenderer.send('window-maximize'),
+  closeWindow: () => ipcRenderer.send('window-close'),
+  isMaximized: () => ipcRenderer.invoke('window-is-maximized'),
+  onMaximizeChange: (fn) => {
+    ipcRenderer.on('window-maximize-change', (_, maximized) => fn(maximized));
+  },
+
+  // 应用配置
+  configRead: () => ipcRenderer.invoke('config-read'),
+  configWrite: (updates) => ipcRenderer.invoke('config-write', updates),
+
+  // 外部链接
+  openExternal: (url) => ipcRenderer.send('open-external', url),
 });

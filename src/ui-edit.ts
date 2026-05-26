@@ -1,5 +1,6 @@
 import { darken, PRESET_COLORS } from "./utils/color";
 import { GraphData } from "./data/storage";
+import { safePrompt } from './dialog';
 
 export interface EditPanelContext {
   graph: GraphData;
@@ -259,8 +260,8 @@ export function createEditPanel(
     }
     // + 按钮
     const addTagBtn = el("span", { text: '+', style: "font-size:0.7em;padding:0 4px;cursor:pointer;border-radius:3px;border:1px solid rgba(255,255,255,0.15);" });
-    addTagBtn.onclick = () => {
-      const tn = prompt('输入标签名：');
+    addTagBtn.onclick = async () => {
+      const tn = await safePrompt('输入标签名：');
       if (!tn) return;
       const nn = graph.nodes.find(n => n.id === getSelNode());
       if (nn) { if (!nn.tags) nn.tags = []; if (!nn.tags.includes(tn)) nn.tags.push(tn); triggerSave(); draw(); }

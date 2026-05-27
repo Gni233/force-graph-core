@@ -119,19 +119,23 @@ export function applyNodeVisual(
   let fillColor = baseColor;
   if (state.groupColor && !state.groupEdgeOnly) fillColor = state.groupColor;
 
-  // --- 发光（用同心圆模拟，无滤镜锯齿）---
+  // --- 发光（6步同心圆 + 二次衰减模拟平滑渐变）---
+  const drawSmoothGlow = (color: number, maxAlpha: number) => {
+    for (let i = 5; i >= 0; i--) {
+      const t = (5 - i) / 5;
+      const offset = (i + 0.5);
+      const alpha = maxAlpha * (1 - t) * (1 - t);
+      circle.circle(0, 0, r + offset).fill({ color, alpha });
+    }
+  };
+
   const goldGlow = (state.selected && !state.boxSelected);
   const blueGlow = state.searchMatch;
+  const cyanGlow = state.boxSelected;
 
-  if (blueGlow) {
-    circle.circle(0, 0, r + 6).fill({ color: 0x3B82F6, alpha: 0.06 });
-    circle.circle(0, 0, r + 4).fill({ color: 0x3B82F6, alpha: 0.10 });
-    circle.circle(0, 0, r + 1).fill({ color: 0x3B82F6, alpha: 0.08 });
-  }
-  if (goldGlow) {
-    circle.circle(0, 0, r + 5).fill({ color: 0xFFD700, alpha: 0.10 });
-    circle.circle(0, 0, r + 3).fill({ color: 0xFFD700, alpha: 0.14 });
-  }
+  if (blueGlow) drawSmoothGlow(0x3B82F6, 0.12);
+  if (goldGlow) drawSmoothGlow(0xFFD700, 0.16);
+  if (cyanGlow) drawSmoothGlow(0x44CCFF, 0.12);
 
   // --- 节点实体 ---
   const fillAlpha = alpha * 0.85;
@@ -144,9 +148,11 @@ export function applyNodeVisual(
         .fill({ color: colors[i], alpha: fillAlpha });
     }
   } else if (state.fixed) {
+    const ringThickness = Math.max(1.5, r * 0.25);
+    const innerR = Math.max(r * 0.3, 1.5);
     circle.circle(0, 0, r).fill({ color: fillColor, alpha: Math.max(0.15, fillAlpha) });
-    circle.circle(0, 0, r * 0.65).cut();
-    circle.circle(0, 0, r * 0.35).fill({ color: fillColor, alpha: Math.max(0.3, fillAlpha) });
+    circle.circle(0, 0, r - ringThickness).cut();
+    circle.circle(0, 0, innerR).fill({ color: fillColor, alpha: Math.max(0.3, fillAlpha) });
   } else {
     circle.circle(0, 0, r).fill({ color: fillColor, alpha: fillAlpha });
     if (state.groupEdgeOnly) {
@@ -154,9 +160,12 @@ export function applyNodeVisual(
     }
   }
 
-  // 选中/框选 金色描边
-  if (state.selected || state.boxSelected) {
+  // 选中描边（金色） vs 框选描边（青色）
+  if (state.selected && !state.boxSelected) {
     circle.circle(0, 0, r + 1).stroke({ color: 0xFFD700, width: 2, alpha });
+  }
+  if (state.boxSelected) {
+    circle.circle(0, 0, r + 1).stroke({ color: 0x44CCFF, width: 2, alpha });
   }
 
   // 搜索高亮 蓝环

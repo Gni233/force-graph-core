@@ -1,4 +1,8 @@
 import { safePrompt } from './dialog';
+import { confirmAction } from './toast';
+import { Z_SETTINGS_PANEL } from './layout-constants';
+
+const V = (name: string, fallback: string) => `var(${name},${fallback})`;
 
 /** 浮动设置面板 + 预设管理 */
 export interface SettingsPanelAPI {
@@ -18,35 +22,43 @@ export function createSettingsPanel(
     getPresets: () => { name: string }[];
     onOpenFolder?: () => void;
     getFolderPath?: () => string;
+    getFileImporter?: () => HTMLElement | null;
     getAutoUpdate?: () => boolean;
     onToggleAutoUpdate?: (val: boolean) => void;
     onCheckUpdate?: () => void;
+    onDownloadInstall?: () => void;
   }
 ): SettingsPanelAPI {
   const panel = document.createElement('div');
   panel.style.cssText =
-    'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:20;' +
+    `position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:${Z_SETTINGS_PANEL};` +
     'min-width:380px;max-width:500px;max-height:82vh;overflow-y:auto;' +
-    'padding:12px;border:1px solid rgba(255,255,255,0.1);border-radius:10px;' +
-    'background:rgba(40,42,48,0.85);backdrop-filter:blur(14px);' +
-    '-webkit-backdrop-filter:blur(14px);color:#d0d0d0;' +
-    'box-shadow:0 8px 32px rgba(0,0,0,0.4);display:none;';
+    `padding:12px;border:1px solid ${V('--fg-glass-border', 'rgba(255,255,255,0.1)')};` +
+    `border-radius:${V('--fg-radius-lg', '10px')};` +
+    `background:${V('--fg-surface-elevated', 'rgba(40,42,48,0.85)')};` +
+    'backdrop-filter:blur(var(--fg-glass-blur-lg,14px));-webkit-backdrop-filter:blur(var(--fg-glass-blur-lg,14px));' +
+    `color:${V('--fg-text', '#d0d0d0')};` +
+    `box-shadow:${V('--fg-shadow-lg', '0 8px 32px rgba(0,0,0,0.4)')};` +
+    'display:none;' +
+    `transition:background var(--fg-transition,0.25s ease),color var(--fg-transition,0.25s ease);`;
 
   // 标题栏
   const titleBar = document.createElement('div');
   titleBar.style.cssText = 'display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;';
   const dot = document.createElement('div');
-  dot.style.cssText = 'width:5px;height:5px;border-radius:50%;background:rgba(255,255,255,0.3);margin-right:8px;';
+  dot.style.cssText = `width:5px;height:5px;border-radius:50%;background:${V('--fg-text-muted', 'rgba(255,255,255,0.3)')};margin-right:8px;`;
   const titleText = document.createElement('span');
   titleText.textContent = '设置';
-  titleText.style.cssText = 'font-weight:bold;font-size:0.95em;';
+  titleText.style.cssText = `font-weight:bold;font-size:${V('--fg-font-lg', '0.95em')};`;
   const titleLeft = document.createElement('div');
   titleLeft.style.cssText = 'display:flex;align-items:center;cursor:move;';
   titleLeft.appendChild(dot);
   titleLeft.appendChild(titleText);
   const closeBtn = document.createElement('span');
   closeBtn.textContent = '\u00D7';
-  closeBtn.style.cssText = 'cursor:pointer;font-size:1.2em;opacity:0.5;';
+  closeBtn.style.cssText =
+    `cursor:pointer;font-size:1.2em;opacity:0.5;color:${V('--fg-text', '#d0d0d0')};` +
+    `transition:opacity var(--fg-transition-fast,0.15s ease);`;
   closeBtn.onclick = () => { panel.style.display = 'none'; };
   closeBtn.onmouseenter = () => { closeBtn.style.opacity = '1'; };
   closeBtn.onmouseleave = () => { closeBtn.style.opacity = '0.5'; };
@@ -54,61 +66,95 @@ export function createSettingsPanel(
   titleBar.appendChild(closeBtn);
   panel.appendChild(titleBar);
 
-  // 拖拽
+  // 拖拽 — 遵循 ui-edit.ts Pattern A（HarmonyOS 兼容，不用 setPointerCapture）
   let dragInfo: any = null;
+  let savedTransition = '';
+
+  const startDrag = (cx: number, cy: number) => {
+    savedTransition = panel.style.transition;
+    panel.style.transition = 'none';
+    dragInfo = { sx: cx, sy: cy, px: parseInt(panel.style.left), py: parseInt(panel.style.top) };
+  };
+
   titleLeft.addEventListener('pointerdown', (e) => {
-    e.preventDefault();
-    titleLeft.setPointerCapture((e as PointerEvent).pointerId);
-    dragInfo = { sx: e.clientX, sy: e.clientY, px: parseInt(panel.style.left), py: parseInt(panel.style.top) };
+    e.preventDefault(); e.stopPropagation();
+    startDrag(e.clientX, e.clientY);
   });
-  window.addEventListener('pointermove', (e) => {
+  titleLeft.addEventListener('touchstart', (e) => {
+    e.preventDefault(); e.stopPropagation();
+    if (e.touches[0]) startDrag(e.touches[0].clientX, e.touches[0].clientY);
+  }, { passive: false });
+
+  const onPointerMove = (e: PointerEvent) => {
     if (!dragInfo) return;
     panel.style.left = (dragInfo.px + e.clientX - dragInfo.sx) + 'px';
     panel.style.top = (dragInfo.py + e.clientY - dragInfo.sy) + 'px';
     panel.style.transform = 'none';
-  });
-  window.addEventListener('pointerup', () => { dragInfo = null; });
+  };
+  const onTouchMove = (e: TouchEvent) => {
+    if (!dragInfo || !e.touches[0]) return;
+    panel.style.left = (dragInfo.px + e.touches[0].clientX - dragInfo.sx) + 'px';
+    panel.style.top = (dragInfo.py + e.touches[0].clientY - dragInfo.sy) + 'px';
+    panel.style.transform = 'none';
+  };
+  const onDragEnd = () => {
+    if (dragInfo) {
+      panel.style.transition = savedTransition || `background var(--fg-transition,0.25s ease),color var(--fg-transition,0.25s ease)`;
+    }
+    dragInfo = null;
+  };
+
+  window.addEventListener('pointermove', onPointerMove);
+  window.addEventListener('pointerup', onDragEnd);
+  window.addEventListener('touchmove', onTouchMove, { passive: false });
+  window.addEventListener('touchend', onDragEnd);
+  window.addEventListener('touchcancel', onDragEnd);
 
   // 预设管理区
   const presetSection = document.createElement('div');
-  presetSection.style.cssText = 'margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid rgba(255,255,255,0.08);';
+  presetSection.style.cssText =
+    `margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid ${V('--fg-border-light', 'rgba(255,255,255,0.08)')};`;
 
   const presetRow = document.createElement('div');
-  presetRow.style.cssText = 'display:flex;gap:3px;flex-wrap:wrap;align-items:center;';
+  presetRow.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;align-items:center;';
+
+  const pillStyle = (extra: string) =>
+    `font-size:${V('--fg-font-xs', '0.72em')};padding:1px 8px;cursor:pointer;border-radius:${V('--fg-radius-sm', '3px')};` +
+    `white-space:nowrap;transition:background var(--fg-transition-fast,0.15s ease);` + extra;
 
   const renderPresets = () => {
-    presetRow.innerHTML = '<span style="font-size:0.8em;opacity:0.5;margin-right:4px;">预设</span>';
+    presetRow.innerHTML = `<span style="font-size:${V('--fg-font-sm', '0.8em')};opacity:0.5;margin-right:4px;color:${V('--fg-text-muted','')}">预设</span>`;
     // "默认" 预设始终在最前
     const defaultPill = document.createElement('span');
     defaultPill.textContent = '默认';
     defaultPill.title = '加载默认预设';
-    defaultPill.style.cssText = 'font-size:0.72em;padding:1px 8px;cursor:pointer;border-radius:3px;border:1px solid rgba(255,255,255,0.25);white-space:nowrap;';
+    defaultPill.style.cssText = pillStyle(`border:1px solid ${V('--fg-border', 'rgba(255,255,255,0.25)')};`);
     defaultPill.onclick = () => callbacks.onLoadPreset('默认');
-    defaultPill.onmouseenter = () => { defaultPill.style.background = 'rgba(255,255,255,0.1)'; };
+    defaultPill.onmouseenter = () => { defaultPill.style.background = V('--fg-button-hover', 'rgba(255,255,255,0.1)'); };
     defaultPill.onmouseleave = () => { defaultPill.style.background = ''; };
     presetRow.appendChild(defaultPill);
     for (const p of callbacks.getPresets()) {
       const pill = document.createElement('span');
       pill.textContent = p.name;
       pill.title = '右键删除';
-      pill.style.cssText = 'font-size:0.72em;padding:1px 8px;cursor:pointer;border-radius:3px;border:1px solid rgba(255,255,255,0.18);white-space:nowrap;';
+      pill.style.cssText = pillStyle(`border:1px solid ${V('--fg-border-light', 'rgba(255,255,255,0.18)')};`);
       pill.onclick = () => callbacks.onLoadPreset(p.name);
-      pill.oncontextmenu = (e) => { e.preventDefault(); if (confirm(`删除预设 "${p.name}"？`)) callbacks.onDeletePreset(p.name); };
-      pill.onmouseenter = () => { pill.style.background = 'rgba(255,255,255,0.1)'; };
+      pill.oncontextmenu = async (e) => { e.preventDefault(); if (await confirmAction(`删除预设 "${p.name}"？`)) callbacks.onDeletePreset(p.name); };
+      pill.onmouseenter = () => { pill.style.background = V('--fg-button-hover', 'rgba(255,255,255,0.1)'); };
       pill.onmouseleave = () => { pill.style.background = ''; };
       presetRow.appendChild(pill);
     }
     const saveBtn = document.createElement('span');
     saveBtn.textContent = '+';
     saveBtn.title = '保存当前为预设';
-    saveBtn.style.cssText = 'font-size:0.75em;padding:1px 6px;cursor:pointer;border-radius:3px;border:1px solid rgba(255,255,255,0.15);';
+    saveBtn.style.cssText = pillStyle(`border:1px solid ${V('--fg-border-light', 'rgba(255,255,255,0.15)')};`);
     saveBtn.onclick = async () => { const n = await safePrompt('预设名称：'); if (n) callbacks.onSavePreset(n); };
     presetRow.appendChild(saveBtn);
 
     const resetBtn = document.createElement('span');
-    resetBtn.textContent = '↺';
+    resetBtn.textContent = '\u21BA';
     resetBtn.title = '恢复预设默认';
-    resetBtn.style.cssText = 'font-size:0.75em;padding:1px 6px;cursor:pointer;border-radius:3px;border:1px solid rgba(255,255,255,0.15);color:#e88;';
+    resetBtn.style.cssText = pillStyle(`border:1px solid ${V('--fg-border-light', 'rgba(255,255,255,0.15)')};color:${V('--fg-danger', '#e88')};`);
     resetBtn.onclick = () => callbacks.onResetDefaults();
     presetRow.appendChild(resetBtn);
   };
@@ -119,20 +165,39 @@ export function createSettingsPanel(
   // 目录选择
   if (callbacks.onOpenFolder) {
     const folderSection = document.createElement('div');
-    folderSection.style.cssText = 'margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid rgba(255,255,255,0.08);';
+    folderSection.style.cssText =
+      `margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid ${V('--fg-border-light', 'rgba(255,255,255,0.08)')};`;
     const folderRow = document.createElement('div');
     folderRow.style.cssText = 'display:flex;align-items:center;gap:6px;';
-    const openBtn = document.createElement('button');
-    openBtn.textContent = '打开目录';
-    openBtn.style.cssText = 'font-size:0.75em;padding:2px 8px;cursor:pointer;background:rgba(255,255,255,0.08);color:#ccc;border:1px solid rgba(255,255,255,0.15);border-radius:4px;';
-    folderRow.appendChild(openBtn);
     const pathLabel = document.createElement('span');
-    openBtn.onclick = async () => {
-      await callbacks.onOpenFolder?.();
-      pathLabel.textContent = callbacks.getFolderPath?.() || '（未选择）';
-    };
-    pathLabel.style.cssText = 'font-size:0.72em;opacity:0.5;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;';
+    pathLabel.style.cssText =
+      `font-size:${V('--fg-font-xs', '0.72em')};opacity:0.5;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;` +
+      `color:${V('--fg-text-muted', '')};`;
     pathLabel.textContent = callbacks.getFolderPath?.() || '（未选择）';
+
+    const importer = callbacks.getFileImporter?.();
+    if (importer) {
+      importer.style.cssText +=
+        `;font-size:0.75em;padding:2px 8px;background:${V('--fg-button-bg', 'rgba(255,255,255,0.08)')};` +
+        `color:${V('--fg-text', '#ccc')};border:1px solid ${V('--fg-border-light', 'rgba(255,255,255,0.15)')};` +
+        `border-radius:${V('--fg-radius-sm', '4px')};`;
+      importer.textContent = '打开目录';
+      folderRow.appendChild(importer);
+    } else {
+      const openBtn = document.createElement('button');
+      openBtn.textContent = '打开目录';
+      openBtn.style.cssText =
+        `font-size:0.75em;padding:2px 8px;cursor:pointer;` +
+        `background:${V('--fg-button-bg', 'rgba(255,255,255,0.08)')};` +
+        `color:${V('--fg-text', '#ccc')};` +
+        `border:1px solid ${V('--fg-border-light', 'rgba(255,255,255,0.15)')};` +
+        `border-radius:${V('--fg-radius-sm', '4px')};`;
+      openBtn.onclick = async () => {
+        await callbacks.onOpenFolder?.();
+        pathLabel.textContent = callbacks.getFolderPath?.() || '（未选择）';
+      };
+      folderRow.appendChild(openBtn);
+    }
     folderRow.appendChild(pathLabel);
     folderSection.appendChild(folderRow);
     panel.appendChild(folderSection);
@@ -141,7 +206,8 @@ export function createSettingsPanel(
   // 自动检查更新
   if (callbacks.getAutoUpdate) {
     const updateSection = document.createElement('div');
-    updateSection.style.cssText = 'margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid rgba(255,255,255,0.08);';
+    updateSection.style.cssText =
+      `margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid ${V('--fg-border-light', 'rgba(255,255,255,0.08)')};`;
     const updateRow = document.createElement('label');
     updateRow.style.cssText = 'display:flex;align-items:center;gap:8px;font-size:0.8em;cursor:pointer;';
     const cb = document.createElement('input');
@@ -155,9 +221,23 @@ export function createSettingsPanel(
     updateRow.appendChild(lbl);
     const checkBtn = document.createElement('button');
     checkBtn.textContent = '检查更新';
-    checkBtn.style.cssText = 'font-size:0.72em;padding:2px 8px;cursor:pointer;background:rgba(255,255,255,0.08);color:#ccc;border:1px solid rgba(255,255,255,0.15);border-radius:4px;';
+    checkBtn.style.cssText =
+      `font-size:${V('--fg-font-xs', '0.72em')};padding:2px 8px;cursor:pointer;` +
+      `background:${V('--fg-button-bg', 'rgba(255,255,255,0.08)')};` +
+      `color:${V('--fg-text', '#ccc')};` +
+      `border:1px solid ${V('--fg-border-light', 'rgba(255,255,255,0.15)')};` +
+      `border-radius:${V('--fg-radius-sm', '4px')};`;
     checkBtn.onclick = (e) => { e.preventDefault(); callbacks.onCheckUpdate?.(); };
     updateRow.appendChild(checkBtn);
+    const dlBtn = document.createElement('button');
+    dlBtn.textContent = '下载安装';
+    dlBtn.style.cssText =
+      `font-size:${V('--fg-font-xs', '0.72em')};padding:2px 8px;cursor:pointer;` +
+      `background:rgba(74,108,247,0.2);color:#8aafff;` +
+      `border:1px solid rgba(74,108,247,0.3);` +
+      `border-radius:${V('--fg-radius-sm', '4px')};`;
+    dlBtn.onclick = (e) => { e.preventDefault(); callbacks.onDownloadInstall?.(); };
+    updateRow.appendChild(dlBtn);
     updateSection.appendChild(updateRow);
     panel.appendChild(updateSection);
   }

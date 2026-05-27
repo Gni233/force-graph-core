@@ -2,6 +2,7 @@ import { canvasPoint, hitTestNode, hitTestEdge, hitTestGroup } from "./geometry/
 import { closeContextMenu, showContextMenu } from "./ui-contextmenu";
 import { GraphData } from "./data/storage";
 import { sharedState } from "./shared-state";
+import { Z_TOOLTIP } from "./layout-constants";
 
 const DRAG_THRESHOLD = 3;
 const LONG_PRESS_DURATION = 500;
@@ -31,6 +32,12 @@ export interface EventsContext {
   onDragEnd?: () => void;
   appShell?: HTMLElement;
   viewport?: any;
+  getLinkMode?: () => boolean;
+  getLinkSrc?: () => string | null;
+  onLinkCursorMove?: (x: number, y: number) => void;
+  initSim?: () => void;
+  clearEd?: () => void;
+  fillNode?: (id: string) => void;
 }
 
 export function setupCanvasEvents(
@@ -69,7 +76,7 @@ export function setupCanvasEvents(
 
   // 创建 tooltip
   const tooltip = document.createElement("div");
-  tooltip.style.cssText = "position:absolute;z-index:50;background:rgba(0,0,0,0.8);color:#fff;padding:4px 8px;border-radius:4px;font-size:12px;max-width:200px;pointer-events:none;display:none;white-space:pre-wrap;word-break:break-word;";
+  tooltip.style.cssText = `position:absolute;z-index:${Z_TOOLTIP};background:rgba(0,0,0,0.8);color:#fff;padding:4px 8px;border-radius:4px;font-size:12px;max-width:200px;pointer-events:none;display:none;white-space:pre-wrap;word-break:break-word;`;
   ctx.appShell!.appendChild(tooltip);
   let hoveredNodeNote: string | null = null;
   const hideTooltip = () => { tooltip.style.display = 'none'; hoveredNodeNote = null; };
@@ -85,6 +92,7 @@ export function setupCanvasEvents(
   let downPoint: [number, number] | null = null;
   let longPressTimer: ReturnType<typeof setTimeout> | null = null;
   const clearLongPress = () => { if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; } };
+  let lastTapTime = 0;
 
   // --- 框选状态 ---
   const BOX_MIN_SIZE = 5;
@@ -109,6 +117,41 @@ export function setupCanvasEvents(
     const items: { label: string; action: () => void }[] = [];
     items.push({ label: `固定 (${ids.length})`, action: () => { ctx.fixNodes?.(ids); selectedNodeIds = []; draw(); } });
     items.push({ label: `解除固定 (${ids.length})`, action: () => { ctx.unfixNodes?.(ids); selectedNodeIds = []; draw(); } });
+    items.push({ label: `删除 (${ids.length})`, action: () => {
+      ctx.graph.nodes = ctx.graph.nodes.filter((n: any) => !ids.includes(n.id));
+      ctx.graph.edges = ctx.graph.edges.filter((e: any) => {
+        const src = typeof e.source === 'object' ? e.source.id : e.source;
+        const tgt = typeof e.target === 'object' ? e.target.id : e.target;
+        return !ids.includes(src) && !ids.includes(tgt);
+      });
+      selectedNodeIds = [];
+      ctx.triggerSave?.();
+      ctx.initSim?.();
+      ctx.clearEd?.();
+      draw();
+    }});
+    items.push({ label: '批量标签...', action: () => {
+      const tag = prompt('添加标签：');
+      if (!tag) return;
+      for (const id of ids) {
+        const n = ctx.graph.nodes.find((n: any) => n.id === id);
+        if (n) { if (!n.tags) n.tags = []; if (!n.tags.includes(tag)) n.tags.push(tag); }
+      }
+      selectedNodeIds = [];
+      ctx.triggerSave?.();
+      draw();
+    }});
+    items.push({ label: '批量颜色...', action: () => {
+      const color = prompt('颜色 (#hex)：');
+      if (!color) return;
+      for (const id of ids) {
+        const n = ctx.graph.nodes.find((n: any) => n.id === id);
+        if (n) n.color = color;
+      }
+      selectedNodeIds = [];
+      ctx.triggerSave?.();
+      draw();
+    }});
     const canvasRect = canvas.getBoundingClientRect();
     showContextMenu(ctx.appShell!, clientX - canvasRect.left, clientY - canvasRect.top, items);
   };
@@ -116,8 +159,11 @@ export function setupCanvasEvents(
   // 连接到 sharedState
   sharedState.setSelectedNodeIdsFn(() => selectedNodeIds);
   sharedState.clearSelection = () => { selectedNodeIds = []; draw(); };
+  sharedState.setSelectedNodeIds = (ids: string[]) => { selectedNodeIds = ids; draw(); };
 
   const triggerContextMenu = (screenX: number, screenY: number) => {
+    // 非框选的右键菜单：清除框选高亮
+    selectedNodeIds = [];
     const [cx, cy] = toWorldPos({ clientX: screenX, clientY: screenY });
     const nodes = getSimulation()?.nodes() || [];
     const n = hitTestNode(cx, cy, nodes, getNodeExpand());
@@ -130,6 +176,7 @@ export function setupCanvasEvents(
   };
 
   const handleTap = (x: number, y: number) => {
+    selectedNodeIds = [];
     // 如果外部提供了 onTap 回调，使用它（集成编辑面板等）
     if (ctx.onTap) { ctx.onTap(x, y); return; }
     const nodes = getSimulation()?.nodes() || [];
@@ -151,7 +198,6 @@ export function setupCanvasEvents(
       isRightButtonDown = true;
       isBoxSelecting = false;
       boxStart = [x, y];
-      canvas.setPointerCapture(e.pointerId);
       if (ctx.viewport) ctx.viewport.pause = true;
       return;
     }
@@ -163,7 +209,7 @@ export function setupCanvasEvents(
       clearLongPress();
     }, LONG_PRESS_DURATION);
     if (n && e.button === 0) {
-      e.stopImmediatePropagation(); e.preventDefault(); canvas.setPointerCapture(e.pointerId);
+      e.stopImmediatePropagation(); e.preventDefault();
       setDraggingNode(n); n.fx = n.x; n.fy = n.y; setWasDragged(false); canvas.style.cursor = "grabbing";
       getSimulation()?.alphaTarget(0.3).restart();
       ctx.onDragStart?.(n.id);
@@ -171,19 +217,109 @@ export function setupCanvasEvents(
     }
   });
 
+  // --- 触屏事件（Android/HarmonyOS 兼容）---
+  canvas.addEventListener("touchstart", (e: TouchEvent) => {
+    closeContextMenu(); hideTooltip();
+    if (!e.touches[0]) return;
+    const touch = e.touches[0];
+    const [x, y] = toWorldPos({ clientX: touch.clientX, clientY: touch.clientY });
+    downPoint = [x, y];
+    const nodes = getSimulation()?.nodes();
+    const n = hitTestNode(x, y, nodes, getNodeExpand());
+    clearLongPress();
+    longPressTimer = setTimeout(() => {
+      if (!getDraggingNode() && !getWasDragged()) triggerContextMenu(touch.clientX, touch.clientY);
+      clearLongPress();
+    }, LONG_PRESS_DURATION);
+    if (n) {
+      e.preventDefault();
+      setDraggingNode(n); n.fx = n.x; n.fy = n.y; setWasDragged(false);
+      getSimulation()?.alphaTarget(0.3).restart();
+      ctx.onDragStart?.(n.id);
+      if (ctx.viewport) ctx.viewport.pause = true;
+    }
+  }, { passive: false });
+
+  canvas.addEventListener("touchmove", (e: TouchEvent) => {
+    clearLongPress();
+    if (!e.touches[0]) return;
+    const touch = e.touches[0];
+    const [mx, my] = toWorldPos({ clientX: touch.clientX, clientY: touch.clientY });
+    const nodes = getSimulation()?.nodes();
+    const hoverNode = nodes ? hitTestNode(mx, my, nodes, getNodeExpand()) : null;
+    sharedState.hoverNodeId = hoverNode ? hoverNode.id : null;
+    if (sharedState.focusMode && sharedState.directDraw) sharedState.directDraw();
+    if (getDraggingNode()) {
+      if (downPoint) { if (Math.hypot(mx - downPoint[0], my - downPoint[1]) >= DRAG_THRESHOLD) setWasDragged(true); }
+      getDraggingNode().fx = mx; getDraggingNode().fy = my; getSimulation()?.alpha(0.3).restart();
+    }
+    if (!getDraggingNode() && hoverNode && hoverNode.note?.trim()) {
+      if (hoveredNodeNote !== hoverNode.note) { hoveredNodeNote = hoverNode.note; updateTooltip(hoverNode.note, touch.clientX, touch.clientY); }
+    } else hideTooltip();
+    // 右击框选不适用于触屏，跳过
+  }, { passive: false });
+
+  canvas.addEventListener("touchend", (e: TouchEvent) => {
+    clearLongPress();
+    // 先处理拖拽结束
+    if (getDraggingNode()) {
+      const node = getDraggingNode();
+      if (getWasDragged() && isFixedNode && isFixedNode(node.id)) {
+        const gn = ctx.graph.nodes.find((gn: any) => gn.id === node.id);
+        if (gn) { gn.fx = node.fx; gn.fy = node.fy; gn.x = node.x; gn.y = node.y; }
+        ctx.triggerSave?.();
+      } else {
+        node.fx = null; node.fy = null;
+      }
+      setDraggingNode(null); getSimulation()?.alphaTarget(0);
+      ctx.onDragEnd?.();
+      if (ctx.viewport) ctx.viewport.pause = false;
+      downPoint = null;
+      draw();
+      return;
+    }
+    // 无拖拽→处理tap选择
+    if (Date.now() - lastTapTime < 300) return;
+    lastTapTime = Date.now();
+    e.preventDefault();
+    if (getWasDragged()) { setWasDragged(false); return; }
+    if (!e.changedTouches[0]) return;
+    const touch = e.changedTouches[0];
+    handleTap(...toWorldPos({ clientX: touch.clientX, clientY: touch.clientY }));
+  });
+
+  canvas.addEventListener("touchcancel", () => {
+    clearLongPress();
+    if (getDraggingNode()) {
+      const node = getDraggingNode();
+      node.fx = null; node.fy = null;
+      setDraggingNode(null); getSimulation()?.alphaTarget(0);
+      ctx.onDragEnd?.();
+      if (ctx.viewport) ctx.viewport.pause = false;
+    }
+    downPoint = null;
+    draw();
+  });
+
   canvas.addEventListener("pointermove", (e: PointerEvent) => {
     clearLongPress();
     const [mx, my] = toWorldPos(e);
     const nodes = getSimulation()?.nodes();
-    const hoverNode = hitTestNode(mx, my, nodes, getNodeExpand());
+    const hoverNode = nodes ? hitTestNode(mx, my, nodes, getNodeExpand()) : null;
     sharedState.hoverNodeId = hoverNode ? hoverNode.id : null;
     if (sharedState.focusMode && sharedState.directDraw) sharedState.directDraw();
+    const inLinkMode = ctx.getLinkMode?.() && ctx.getLinkSrc?.();
     if (getDraggingNode()) { canvas.style.cursor = "grabbing"; }
+    else if (inLinkMode && hoverNode) { canvas.style.cursor = "crosshair"; }
+    else if (inLinkMode) { canvas.style.cursor = "crosshair"; }
     else if (hoverNode) { canvas.style.cursor = "pointer"; }
     else { canvas.style.cursor = "grab"; }
     if (getDraggingNode()) {
       if (downPoint) { if (Math.hypot(mx - downPoint[0], my - downPoint[1]) >= DRAG_THRESHOLD) setWasDragged(true); }
       getDraggingNode().fx = mx; getDraggingNode().fy = my; getSimulation()?.alpha(0.3).restart();
+    }
+    if (ctx.onLinkCursorMove && ctx.getLinkMode?.() && ctx.getLinkSrc?.()) {
+      ctx.onLinkCursorMove(mx, my);
     }
     if (!getDraggingNode() && hoverNode && hoverNode.note?.trim()) {
       if (hoveredNodeNote !== hoverNode.note) { hoveredNodeNote = hoverNode.note; updateTooltip(hoverNode.note, e.offsetX, e.offsetY); }
@@ -191,7 +327,9 @@ export function setupCanvasEvents(
 
     // --- 右键框选 ---
     if (isRightButtonDown && !isBoxSelecting && boxStart) {
-      if (Math.hypot(mx - boxStart[0], my - boxStart[1]) >= BOX_MIN_SIZE) {
+      const [sx1, sy1] = worldToScreen(boxStart[0], boxStart[1]);
+      const [sx2, sy2] = worldToScreen(mx, my);
+      if (Math.hypot(sx2 - sx1, sy2 - sy1) >= BOX_MIN_SIZE) {
         isBoxSelecting = true;
         if (ctx.selectionBox) ctx.selectionBox.style.display = 'block';
       }
@@ -216,16 +354,14 @@ export function setupCanvasEvents(
         if (isBoxSelecting) {
           isBoxSelecting = false;
           if (ctx.selectionBox) ctx.selectionBox.style.display = 'none';
-          canvas.releasePointerCapture(e.pointerId);
-          if (boxStart) {
+                    if (boxStart) {
             const [mx, my] = toWorldPos(e);
             showBoxMenu(getNodesInRect(boxStart[0], boxStart[1], mx, my), e.clientX, e.clientY);
           }
           boxStart = null;
           lastBoxUpTime = Date.now();
         } else {
-          canvas.releasePointerCapture(e.pointerId);
-          triggerContextMenu(e.clientX, e.clientY);
+                    triggerContextMenu(e.clientX, e.clientY);
         }
       }
       e.preventDefault(); e.stopImmediatePropagation(); return;
@@ -242,7 +378,7 @@ export function setupCanvasEvents(
       } else {
         node.fx = null; node.fy = null;
       }
-      setDraggingNode(null); getSimulation()?.alphaTarget(0); canvas.style.cursor = "grab"; canvas.releasePointerCapture(e.pointerId); draw();
+      setDraggingNode(null); getSimulation()?.alphaTarget(0); canvas.style.cursor = "grab"; draw();
       ctx.onDragEnd?.();
       if (ctx.viewport) ctx.viewport.pause = false;
     }
@@ -251,6 +387,8 @@ export function setupCanvasEvents(
 
   canvas.addEventListener("click", (e: MouseEvent) => {
     if (getWasDragged()) { setWasDragged(false); return; }
+    // 若 touchend 刚刚处理过 tap（300ms 内），跳过避免双击
+    if (Date.now() - lastTapTime < 500) return;
     handleTap(...toWorldPos(e));
   });
 

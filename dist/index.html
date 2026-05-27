@@ -5,38 +5,187 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Force Graph Core</title>
   <style>
+    /* ---- Electron 无边框窗口拖动区域 ---- */
+    .fg-drag-region {
+      -webkit-app-region: drag;
+    }
+    .fg-drag-region button,
+    .fg-drag-region input,
+    .fg-drag-region select,
+    .fg-drag-region textarea,
+    .fg-drag-region details,
+    .fg-drag-region summary,
+    .fg-drag-region [draggable] {
+      -webkit-app-region: no-drag;
+    }
+
+    /* ---- Reset ---- */
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    html, body { width: 100%; height: 100%; overflow: hidden; }
-    #app { width: 100vw; height: 100vh; }
 
-    /* 默认卡片布局 — 圆角 + 柔和阴影 */
-    button {
-      border-radius: 8px !important;
-      box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+    html, body {
+      width: 100%; height: 100%; overflow: hidden;
+      transition: background var(--fg-transition, 0.25s ease);
     }
+
+    #app {
+      width: 100vw; height: 100vh;
+      transition: background var(--fg-transition, 0.25s ease);
+      overscroll-behavior: none;
+      -webkit-overscroll-behavior: none;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+
+    /* ---- Mobile touch adaptation ---- */
+    canvas, .fg-glass, .fg-glass-elevated {
+      touch-action: manipulation;
+    }
+    button, input, select, textarea, [contenteditable] {
+      user-select: auto;
+      -webkit-user-select: auto;
+    }
+
+    /* ---- CSS Variable Defaults (generic-dark fallback) ---- */
+    :root {
+      --fg-canvas-bg: #2a2a2a;
+      --fg-surface: #3f3f3f;
+      --fg-surface-glass: rgba(63,63,63,0.65);
+      --fg-surface-elevated: rgba(63,63,63,0.85);
+      --fg-text: #ffffff;
+      --fg-text-muted: #a0a0a0;
+      --fg-text-dim: #666666;
+      --fg-border: #7e7e7e;
+      --fg-border-light: rgba(255,255,255,0.08);
+      --fg-input-bg: #3f3f3f;
+      --fg-input-text: #ffffff;
+      --fg-input-border: #7e7e7e;
+      --fg-button-bg: #545454;
+      --fg-button-text: #ffffff;
+      --fg-button-hover: #5e5e5e;
+      --fg-accent: #5B8FF9;
+      --fg-accent-hover: #4a7ce0;
+      --fg-accent-text: #ffffff;
+      --fg-danger: #e03030;
+      --fg-danger-hover: #c52828;
+      --fg-shadow-sm: 0 1px 3px rgba(0,0,0,0.3);
+      --fg-shadow-md: 0 4px 16px rgba(0,0,0,0.4);
+      --fg-shadow-lg: 0 8px 32px rgba(0,0,0,0.5);
+      --fg-glass-blur: 12px;
+      --fg-glass-blur-sm: 4px;
+      --fg-glass-blur-md: 10px;
+      --fg-glass-blur-lg: 16px;
+      --fg-glass-border: rgba(255,255,255,0.08);
+      --fg-radius-sm: 4px;
+      --fg-radius-md: 8px;
+      --fg-radius-lg: 12px;
+      --fg-label-width: 110px;
+      --fg-input-number-width: 55px;
+      --fg-line-height: 1.5;
+      --fg-font-xxs: 0.65em;
+      --fg-font-xs: 0.72em;
+      --fg-font-sm: 0.8em;
+      --fg-font-md: 0.85em;
+      --fg-font-lg: 0.92em;
+      --fg-font-xl: 1.1em;
+      --fg-transition-fast: 0.15s ease;
+      --fg-transition: 0.25s ease;
+      --fg-scrollbar-thumb: rgba(255,255,255,0.15);
+      --fg-scrollbar-thumb-hover: rgba(255,255,255,0.3);
+      --fg-sidebar-bg: #3f3f3f;
+      --fg-sidebar-border: #7e7e7e;
+      --fg-sidebar-header-text: #ffffff;
+      --fg-sidebar-item-hover: #4a4a4a;
+      --fg-sidebar-item-active: #505050;
+      --fg-tab-inactive: #a0a0a0;
+      --fg-tab-active-bg: #3f3f3f;
+      --fg-tab-active-border: #7e7e7e;
+    }
+
+    /* ---- Shared component styles ---- */
+
+    /* Glass panel — sidebar, floating bars, panels */
+    .fg-glass {
+      background: var(--fg-surface-glass);
+      backdrop-filter: blur(var(--fg-glass-blur));
+      -webkit-backdrop-filter: blur(var(--fg-glass-blur));
+      border: 1px solid var(--fg-glass-border);
+      border-radius: var(--fg-radius-md);
+      color: var(--fg-text);
+      transition: background var(--fg-transition), border-color var(--fg-transition), color var(--fg-transition);
+    }
+
+    /* Elevated glass — modals, dialogs */
+    .fg-glass-elevated {
+      background: var(--fg-surface-elevated);
+      backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
+      border: 1px solid var(--fg-glass-border);
+      border-radius: var(--fg-radius-lg);
+      color: var(--fg-text);
+      box-shadow: var(--fg-shadow-lg);
+      transition: background var(--fg-transition), border-color var(--fg-transition), color var(--fg-transition);
+    }
+
+    /* Buttons */
+    button, .fg-btn {
+      font-size: var(--fg-font-md);
+      padding: 2px 8px;
+      border-radius: var(--fg-radius-sm);
+      border: 1px solid var(--fg-border);
+      background: var(--fg-button-bg);
+      color: var(--fg-button-text);
+      cursor: pointer;
+      transition: background var(--fg-transition-fast), color var(--fg-transition-fast),
+                  border-color var(--fg-transition-fast), box-shadow var(--fg-transition-fast);
+      box-shadow: var(--fg-shadow-sm);
+    }
+    button:hover, .fg-btn:hover {
+      background: var(--fg-button-hover);
+    }
+
+    /* Inputs & selects */
     input, select, textarea {
-      border-radius: 8px !important;
-      padding-left: 8px !important;
+      font-size: var(--fg-font-md);
+      padding: 2px 6px;
+      border-radius: var(--fg-radius-sm);
+      border: 1px solid var(--fg-input-border);
+      background: var(--fg-input-bg);
+      color: var(--fg-input-text);
+      transition: background var(--fg-transition-fast), color var(--fg-transition-fast),
+                  border-color var(--fg-transition-fast);
     }
-    details {
-      border-radius: 10px !important;
-      box-shadow: 0 1px 4px rgba(0,0,0,0.06);
-      padding: 6px 10px !important;
-      margin: 0 0 4px 0 !important;
-    }
-    details[open] {
-      box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+    input:focus, select:focus, textarea:focus {
+      outline: none;
+      border-color: var(--fg-accent);
+      box-shadow: 0 0 0 1px var(--fg-accent);
     }
 
-    /* 暗色滚动条（适配玻璃面板）*/
+    /* Scrollbar */
     ::-webkit-scrollbar { width: 6px; height: 6px; }
     ::-webkit-scrollbar-track { background: transparent; }
-    ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 3px; }
-    ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.3); }
-    /* Firefox */
-    * { scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.15) transparent; }
+    ::-webkit-scrollbar-thumb {
+      background: var(--fg-scrollbar-thumb);
+      border-radius: 3px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: var(--fg-scrollbar-thumb-hover);
+    }
+    * {
+      scrollbar-width: thin;
+      scrollbar-color: var(--fg-scrollbar-thumb) transparent;
+    }
+
+    /* ---- HarmonyOS / 非 WebKit 引擎降级 ---- */
+    @supports not ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
+      .fg-glass {
+        background: var(--fg-surface);
+      }
+      .fg-glass-elevated {
+        background: var(--fg-surface);
+      }
+    }
   </style>
-  <script type="module" crossorigin src="./assets/index-De-ZsP-C.js"></script>
+  <script type="module" crossorigin src="./assets/index-CjhZpSyM.js"></script>
 </head>
 <body>
   <div id="app"></div>

@@ -5,6 +5,7 @@ let _focusModeFn: (() => boolean) | null = null;
 let _hoverNodeId: string | null = null;
 let _selectedNodeIdsFn: (() => string[]) | null = null;
 let _clearSelectionFn: (() => void) | null = null;
+let _setSelectedNodeIdsFn: ((ids: string[]) => void) | null = null;
 
 export const sharedState = {
   /** 直接绘制函数（绕过 RAF 节流） */
@@ -20,6 +21,9 @@ export const sharedState = {
   get selectedNodeIds() { return _selectedNodeIdsFn?.() ?? []; },
   /** 设置 selectedNodeIds 查询函数 */
   setSelectedNodeIdsFn(fn: () => string[]) { _selectedNodeIdsFn = fn; },
+
+  get setSelectedNodeIds() { return _setSelectedNodeIdsFn; },
+  set setSelectedNodeIds(fn: ((ids: string[]) => void) | null) { _setSelectedNodeIdsFn = fn; },
 
   get clearSelection() { return _clearSelectionFn; },
   set clearSelection(fn: (() => void) | null) { _clearSelectionFn = fn; },

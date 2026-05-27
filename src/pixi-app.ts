@@ -10,6 +10,7 @@ export interface PixiLayers {
   blobLayer: Container;
   nodeLayer: Container;
   labelLayer: Container;
+  onContextRestored?: (() => void) | null;
 }
 
 export async function createPixiApp(container: HTMLElement): Promise<PixiLayers> {
@@ -27,7 +28,6 @@ export async function createPixiApp(container: HTMLElement): Promise<PixiLayers>
   });
 
   container.appendChild(app.canvas);
-  app.canvas.style.touchAction = 'none'; // 移动端防止浏览器默认手势
 
   // pixi-viewport: zoom/pan/drag/wheel
   // 用 window 尺寸，因为同步 JS 阶段 container.clientWidth 可能是 0（未布局）
@@ -68,5 +68,17 @@ export async function createPixiApp(container: HTMLElement): Promise<PixiLayers>
   viewport.addChild(nodeLayer);
   viewport.addChild(labelLayer);
 
-  return { app, viewport, gridLayer, groupLayer, edgeLayer, blobLayer, nodeLayer, labelLayer };
+  // WebGL context loss recovery
+  let contextLost = false;
+  const result: PixiLayers = { app, viewport, gridLayer, groupLayer, edgeLayer, blobLayer, nodeLayer, labelLayer };
+  app.canvas.addEventListener('webglcontextlost', (e) => {
+    e.preventDefault();
+    contextLost = true;
+  });
+  app.canvas.addEventListener('webglcontextrestored', () => {
+    contextLost = false;
+    result.onContextRestored?.();
+  });
+
+  return result;
 }

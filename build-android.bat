@@ -60,12 +60,13 @@ exit /b 1
 
 :hasjava
 echo [JDK] %JAVA_HOME%
-set PATH=%JAVA_HOME%\bin;%PATH%
+set "PATH=%JAVA_HOME%\bin;%PATH%"
 
 echo [1/3] Clearing old APK...
 del /q "android\app\build\outputs\apk\debug\app-debug.apk" 2>nul
 
 echo [2/3] Building frontend + Android APK...
+set "JAVA_HOME=%JAVA_HOME%"
 call npm run android:build
 if %errorlevel% neq 0 (
     echo Build failed! Check errors above.

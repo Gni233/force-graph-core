@@ -1,63 +1,64 @@
 /**
- * Android/Capacitor 文件系统模块
- * 使用 @capacitor/filesystem 和 @capawesome/capacitor-file-picker
- * 数据存储在应用私有目录，通过文件选择器导入/导出
+ * Capacitor/WebView 文件系统模块（兼容 HarmonyOS）
+ * 使用 @capacitor/filesystem 存储，使用 HTML 文件选择器导入
  */
 import { Filesystem, Directory } from '@capacitor/filesystem';
-import { FilePicker } from '@capawesome/capacitor-file-picker';
 
 const WORK_DIR = 'graphs';
 
-/** 确保工作目录存在 */
 async function ensureWorkDir(): Promise<void> {
   try {
     await Filesystem.mkdir({ path: WORK_DIR, directory: Directory.Data, recursive: true });
   } catch {}
 }
 
-/** 请求文件权限并打开文件选择器，导入 .json 文件到应用数据目录 */
-export async function openFolderMobile(): Promise<string | null> {
-  try {
-    // 运行时请求权限（Android 6.0+ / HarmonyOS 必须）
-    try {
-      const perm = await FilePicker.checkPermissions();
-      if (perm.readExternalStorage !== 'granted') {
-        const req = await FilePicker.requestPermissions();
-        if (req.readExternalStorage !== 'granted') {
-          console.error('文件权限被拒绝');
-          return null;
-        }
-      }
-    } catch {}
+/**
+ * 创建文件导入控件。
+ * 返回 { label, input } 两个元素：
+ * - input 是隐藏的 <input type="file"> 加到 body
+ * - label 是用 for+id 关联的可见按钮
+ * 用户点击 label 时触发原生选择器（鸿蒙兼容）。
+ */
+export function createFileImporter(onDone: () => void): { label: HTMLElement; input: HTMLInputElement } {
+  const id = 'fg-file-importer-' + Date.now();
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.id = id;
+  input.accept = '.json,application/json';
+  input.multiple = true;
+  input.style.cssText = 'position:fixed;top:-9999px;left:-9999px;';
 
-    const result = await FilePicker.pickFiles({
-      limit: 0,
-      types: ['application/json'],
-      readData: true,
-    });
-    if (!result.files.length) return null;
+  const label = document.createElement('label');
+  label.setAttribute('for', id);
+  label.style.cssText = 'display:inline-block;cursor:pointer;';
+
+  // input 必须挂到 DOM 中（文件选择器要求）
+  document.body.appendChild(input);
+
+  input.addEventListener('change', async () => {
+    const files = input.files;
+    if (!files || files.length === 0) { onDone(); return; }
 
     await ensureWorkDir();
-
-    for (const file of result.files) {
-      if (!file.name || !file.data) continue;
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
       const name = file.name.endsWith('.json') ? file.name : file.name + '.json';
       try {
-        const text = atob(file.data);
+        const text = await file.text();
         await Filesystem.writeFile({
           path: `${WORK_DIR}/${name}`,
           data: text,
           directory: Directory.Data,
         });
       } catch (e) {
-        console.error('导入文件失败:', name, e);
+        console.error('import failed:', name, e);
       }
     }
-    return WORK_DIR;
-  } catch (e) {
-    console.error('打开文件夹失败', e);
-    return null;
-  }
+    input.value = ''; // 允许重复选择同一文件
+    onDone();
+  });
+
+  return { label, input };
 }
 
 /** 列出工作目录下所有 .json 文件 */
@@ -73,7 +74,6 @@ export async function listFilesMobile(): Promise<{ name: string; kind: 'file' | 
   }
 }
 
-/** 读取图文件 */
 export async function readFileMobile(fileName: string): Promise<any | null> {
   try {
     const result = await Filesystem.readFile({
@@ -86,7 +86,6 @@ export async function readFileMobile(fileName: string): Promise<any | null> {
   }
 }
 
-/** 写入图文件 */
 export async function writeFileMobile(fileName: string, data: any): Promise<boolean> {
   try {
     await ensureWorkDir();
@@ -97,12 +96,11 @@ export async function writeFileMobile(fileName: string, data: any): Promise<bool
     });
     return true;
   } catch (e) {
-    console.error('写入文件失败', e);
+    console.error('write failed', e);
     return false;
   }
 }
 
-/** 删除图文件 */
 export async function deleteFileMobile(fileName: string): Promise<boolean> {
   try {
     await Filesystem.deleteFile({ path: `${WORK_DIR}/${fileName}`, directory: Directory.Data });
@@ -112,7 +110,43 @@ export async function deleteFileMobile(fileName: string): Promise<boolean> {
   }
 }
 
-/** 检测是否运行在 Capacitor 环境 */
+/** 下载 APK 并触发安装（使用 blob URL，无需文件权限） */
+export async function downloadApk(url: string): Promise<void> {
+  try {
+    const resp = await fetch(url);
+    const blob = await resp.blob();
+    const blobUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = blobUrl;
+    a.download = 'force-graph-update.apk';
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => {
+      document.body.removeChild(a);
+      URL.revokeObjectURL(blobUrl);
+    }, 2000);
+  } catch {
+    window.open(url, '_blank');
+  }
+}
+
+/** 下载最新 Release 的 APK */
+export async function downloadReleaseApk(): Promise<void> {
+  try {
+    const resp = await fetch('https://api.github.com/repos/Gni233/force-graph-core/releases/latest');
+    const data = await resp.json();
+    const apk = data.assets?.find((a: any) => a.name.endsWith('.apk'));
+    if (apk) {
+      await downloadApk(apk.browser_download_url);
+    } else {
+      window.open(data.html_url || 'https://github.com/Gni233/force-graph-core/releases', '_blank');
+    }
+  } catch {
+    window.open('https://github.com/Gni233/force-graph-core/releases', '_blank');
+  }
+}
+
 export function isCapacitor(): boolean {
   return !!(window as any).Capacitor?.isNative?.();
 }

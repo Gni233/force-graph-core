@@ -1,7 +1,6 @@
 import { THEMES, getThemeLabel } from "./theme";
 
-const UI_BORDER = "#d0d0d0";
-const UI_BG = "#f2f2f2";
+const V = (name: string, fallback: string) => `var(${name},${fallback})`;
 
 interface SliderHandle {
   set: (v: number) => void;
@@ -19,7 +18,7 @@ function makeSlider(
   const row = document.createElement("div");
   row.style.cssText = "display:flex;gap:8px;align-items:center;margin:2px 0;";
   const lb = document.createElement("span");
-  lb.style.cssText = "font-size:0.85em;width:110px;flex-shrink:0;text-align:right;";
+  lb.style.cssText = "font-size:" + V('--fg-font-md', '0.85em') + ";width:" + V('--fg-label-width', '110px') + ";flex-shrink:0;text-align:right;";
   lb.textContent = label;
   row.appendChild(lb);
   const range = document.createElement("input");
@@ -35,7 +34,7 @@ function makeSlider(
   num.max = String(max);
   num.step = String(step);
   num.value = String(val);
-  num.style.cssText = "width:55px;font-size:0.85em;text-align:right;";
+  num.style.cssText = "width:" + V('--fg-input-number-width', '55px') + ";font-size:" + V('--fg-font-md', '0.85em') + ";text-align:right;";
   const round = step < 1 ? Math.max(0, -Math.floor(Math.log10(step))) : 0;
   range.addEventListener("input", () => {
     const v = parseFloat(range.value);
@@ -66,7 +65,7 @@ function makeCheckbox(
   cb.addEventListener("change", () => onChange(cb.checked));
   row.appendChild(cb);
   const lb = document.createElement("span");
-  lb.style.cssText = "font-size:0.85em;";
+  lb.style.cssText = "font-size:" + V('--fg-font-md', '0.85em') + ";";
   lb.textContent = label;
   row.appendChild(lb);
   parent.appendChild(row);
@@ -159,9 +158,17 @@ export function buildSettings(
   themeRow.appendChild(themeSelect);
   container.appendChild(themeRow);
 
-  // 滑块
+  // 区块标题辅助函数
+  const addSection = (title: string) => {
+    const hdr = document.createElement("div");
+    hdr.textContent = title;
+    hdr.style.cssText = "font-weight:bold;margin:10px 0 4px;padding-top:8px;border-top:1px solid " + V('--fg-border-light', 'rgba(255,255,255,0.08)') + ";font-size:" + V('--fg-font-sm', '0.8em') + ";color:" + V('--fg-text-muted', '#999') + ";";
+    container.appendChild(hdr);
+  };
+
+  // === 力学参数 ===
+  addSection("力学参数");
   const linkDistSlider = makeSlider(container, "连线距离", 30, 300, getLinkDist(), 1, v => { setLinkDist(v); getInitSim()(); getSaveData()(); });
-  const labelSizeSlider = makeSlider(container, "标签大小", 8, 40, getLabelSize(), 1, v => { setLabelSize(v); getSaveData()(); });
   const chargeSlider = makeSlider(container, "斥力", -500, -10, getCharge(), 10, v => { setCharge(v); getInitSim()(); getSaveData()(); });
   const linkStrSlider = makeSlider(container, "连线强度", 0, 1, getLinkStr(), 0.05, v => { setLinkStr(v); getInitSim()(); getSaveData()(); });
   const collideRSlider = makeSlider(container, "碰撞半径", 0, 50, getCollideR(), 1, v => { setCollideR(v); getInitSim()(); getSaveData()(); });
@@ -169,25 +176,36 @@ export function buildSettings(
   const groupBoundSlider = makeSlider(container, "集合边界", 0, 2, getGroupBound(), 0.1, v => { setGroupBound(v); getInitSim()(); getSaveData()(); });
   const heatingTimeSlider = makeSlider(container, "加热时间(秒)", 0, 10, getHeatingTime(), 0.5, v => { setHeatingTime(v); getSaveData()(); });
   const alphaTargetSlider = makeSlider(container, "目标活跃度", 0, 1, getAlphaTarget(), 0.05, v => { setAlphaTarget(v); getInitSim()(); getSaveData()(); });
+
+  // === 标签与外观 ===
+  addSection("标签与外观");
+  const labelSizeSlider = makeSlider(container, "标签大小", 8, 40, getLabelSize(), 1, v => { setLabelSize(v); getSaveData()(); });
   const editPanelOpacitySlider = makeSlider(container, "编辑面板透明度", 0, 1, getEditPanelOpacity(), 0.05, v => { setEditPanelOpacity(v); getSaveData()(); });
   const nodeExpandSlider = makeSlider(container, "节点点击扩展", 0, 20, getNodeExpand(), 1, v => { setNodeExpand(v); getSaveData()(); });
   const lineExpandSlider = makeSlider(container, "边点击扩展", 0, 20, getLineExpand(), 1, v => { setLineExpand(v); getSaveData()(); });
+  const glChk = makeCheckbox(container, "显示集合标签", getShowGLabels(), v => { setShowGLabels(v); getSaveData()(); });
   const glMinSlider = makeSlider(container, "最小集合标签", 5, 20, getGlMin(), 1, v => { setGlMin(v); getSaveData()(); });
   const glMaxSlider = makeSlider(container, "最大集合标签", 10, 50, getGlMax(), 1, v => { setGlMax(v); getSaveData()(); });
-  const gridSpSlider = makeSlider(container, "网格间距", 10, 100, getGridSp(), 5, v => { setGridSp(v); getSaveData()(); });
-  const arSlider = makeSlider(container, "图区高宽比", 0.3, 1.5, getAr(), 0.05, v => { setAr(v); getSaveData()(); });
 
-  // 复选框
+  // === 显示效果 ===
+  addSection("显示效果");
   const focusChk = makeCheckbox(container, "聚焦", getFocusMode(), v => { setFocusMode(v); draw(); getSaveData()(); });
   const fluidChk = makeCheckbox(container, "流体节点", getFluidAppearance(), v => { setFluidAppearance(v); draw(); getSaveData()(); });
   const glowChk = makeCheckbox(container, "节点光晕", getGlowAppearance(), v => { setGlowAppearance(v); draw(); getSaveData()(); });
   const gravityChk = makeCheckbox(container, "引力网", getGravityGrid(), v => { setGravityGrid(v); draw(); getSaveData()(); });
-  const gridWidthSlider = makeSlider(container, "网格线宽", 0.2, 4, getGridWidth(), 0.1, v => { setGridWidth(v); getSaveData()(); });
-  const raflChk = makeCheckbox(container, "性能模式 (RAF 节流)", getUseRAFL(), v => { setUseRAFL(v); if (getSimulation()) getSimulation()!.alpha(0.3).restart(); getSaveData()(); });
-  const glChk = makeCheckbox(container, "显示集合标签", getShowGLabels(), v => { setShowGLabels(v); getSaveData()(); });
+
+  // === 网格 ===
+  addSection("网格");
   const gridChk = makeCheckbox(container, "显示网格", getGridVis(), v => { setGridVis(v); getSaveData()(); });
   const axisChk = makeCheckbox(container, "显示坐标轴", getAxisVis(), v => { setAxisVis(v); getSaveData()(); });
   const ticksChk = makeCheckbox(container, "坐标轴刻度", getAxisTicks(), v => { setAxisTicks(v); getSaveData()(); });
+  const gridSpSlider = makeSlider(container, "网格间距", 10, 100, getGridSp(), 5, v => { setGridSp(v); getSaveData()(); });
+  const arSlider = makeSlider(container, "图区高宽比", 0.3, 1.5, getAr(), 0.05, v => { setAr(v); getSaveData()(); });
+  const gridWidthSlider = makeSlider(container, "网格线宽", 0.2, 4, getGridWidth(), 0.1, v => { setGridWidth(v); getSaveData()(); });
+
+  // === 性能 ===
+  addSection("性能");
+  const raflChk = makeCheckbox(container, "性能模式 (RAF 节流)", getUseRAFL(), v => { setUseRAFL(v); if (getSimulation()) getSimulation()!.alpha(0.3).restart(); getSaveData()(); });
 
   // 恢复默认按钮
   const resetBtn = document.createElement("button");

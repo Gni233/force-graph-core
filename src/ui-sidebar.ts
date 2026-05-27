@@ -18,6 +18,11 @@ export interface FileTreeItem {
 }
 
 import { safePrompt } from './dialog';
+import { confirmAction } from './toast';
+import { SIDEBAR_WIDTH, SIDEBAR_COLLAPSED_WIDTH, SIDEBAR_MIN_WIDTH, getResponsiveSidebarWidth, Z_CONTEXT_MENU } from './layout-constants';
+
+// Shared CSS variable references used throughout the sidebar
+const V = (name: string, fallback: string) => `var(${name},${fallback})`;
 
 export function createSidebar(
   parent: HTMLElement,
@@ -26,27 +31,28 @@ export function createSidebar(
   const { onSelectFile, onNewFile, onDeleteFile, onRenameFile, onOpenFolder, onCopyFile, onNewFolder, onMoveFile } = callbacks;
 
   const sidebar = document.createElement('div');
-  sidebar.style.cssText = 'width:240px;min-width:180px;display:flex;flex-direction:column;background:#2d2d2d;color:#ccc;border-right:1px solid #444;font-size:0.85em;height:100%;overflow:hidden;';
+  // Outer styling (glass background) is set by caller via className; internal layout only
+  sidebar.style.cssText = `width:${SIDEBAR_WIDTH}px;min-width:${SIDEBAR_MIN_WIDTH}px;display:flex;flex-direction:column;font-size:0.85em;height:100%;overflow:hidden;`;
 
   const header = document.createElement('div');
-  header.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:8px 10px;border-bottom:1px solid #444;';
+  header.style.cssText = `display:flex;align-items:center;justify-content:space-between;padding:8px 10px;border-bottom:1px solid ${V('--fg-border-light', 'rgba(255,255,255,0.08)')};`;
   const title = document.createElement('span');
   title.textContent = 'Force Graph';
-  title.style.cssText = 'font-weight:bold;font-size:1em;color:#e0e0e0;';
+  title.style.cssText = `font-weight:bold;font-size:1em;color:${V('--fg-text', '#e0e0e0')};`;
   header.appendChild(title);
   const collapseBtn = document.createElement('button');
-  collapseBtn.textContent = '✕';
+  collapseBtn.textContent = '\u2715';
   collapseBtn.title = '折叠侧边栏';
-  collapseBtn.style.cssText = 'background:none;border:none;color:#aaa;cursor:pointer;font-size:0.9em;padding:0 4px;';
+  collapseBtn.style.cssText = `background:none;border:none;color:${V('--fg-text-muted', '#aaa')};cursor:pointer;font-size:0.9em;padding:0 4px;transition:color var(--fg-transition-fast,0.15s ease);`;
   header.appendChild(collapseBtn);
   sidebar.appendChild(header);
 
   const newRow = document.createElement('div');
-  newRow.style.cssText = 'padding:4px 10px;border-bottom:1px solid #444;';
+  newRow.style.cssText = `padding:4px 10px;border-bottom:1px solid ${V('--fg-border-light', 'rgba(255,255,255,0.08)')};`;
   const newFileBtn = document.createElement('button');
   newFileBtn.textContent = '+ 新建图';
   newFileBtn.title = '在当前目录下创建新图文件';
-  newFileBtn.style.cssText = 'background:none;border:none;color:#aaa;cursor:pointer;padding:3px 0;width:100%;text-align:left;';
+  newFileBtn.style.cssText = `background:none;border:none;color:${V('--fg-text-muted', '#aaa')};cursor:pointer;padding:3px 0;width:100%;text-align:left;transition:color var(--fg-transition-fast,0.15s ease);`;
   newFileBtn.onclick = async () => {
     const name = await safePrompt('输入图文件名（自动加 .json）：');
     if (name) onNewFile(name.endsWith('.json') ? name : name + '.json');
@@ -64,25 +70,55 @@ export function createSidebar(
   const openDirs = new Set<string>();
 
   // 右键菜单工厂
-  const showMenu = (e: MouseEvent, items: { text: string; action: () => void }[]) => {
-    e.preventDefault();
+  const showMenuAt = (screenX: number, screenY: number, items: { text: string; action: () => void }[]) => {
     const menu = document.createElement('div');
-    menu.style.cssText = `position:absolute;left:${e.clientX - sidebar.getBoundingClientRect().left}px;top:${e.clientY - sidebar.getBoundingClientRect().top}px;z-index:100;background:#3a3a3a;border:1px solid #555;border-radius:4px;padding:4px 0;min-width:100px;font-size:0.85em;`;
+    menu.style.cssText = `position:absolute;left:${screenX - sidebar.getBoundingClientRect().left}px;top:${screenY - sidebar.getBoundingClientRect().top}px;z-index:${Z_CONTEXT_MENU};background:${V('--fg-surface', '#3a3a3a')};border:1px solid ${V('--fg-border', '#555')};border-radius:${V('--fg-radius-sm', '4px')};padding:4px 0;min-width:100px;font-size:0.85em;box-shadow:${V('--fg-shadow-md', '0 4px 16px rgba(0,0,0,0.4)')};color:${V('--fg-text', '#ccc')};`;
     items.forEach(it => {
       const mi = document.createElement('div');
-      mi.textContent = it.text; mi.style.cssText = 'padding:4px 10px;cursor:pointer;';
-      mi.onmouseenter = () => mi.style.background = '#555';
+      mi.textContent = it.text;
+      mi.style.cssText = `padding:4px 10px;cursor:pointer;transition:background var(--fg-transition-fast,0.15s ease);`;
+      mi.onmouseenter = () => mi.style.background = V('--fg-button-hover', '#555');
       mi.onmouseleave = () => mi.style.background = '';
       mi.onclick = () => { it.action(); menu.remove(); };
       menu.appendChild(mi);
     });
     sidebar.appendChild(menu);
-    const close = (ev: MouseEvent) => { if (!menu.contains(ev.target as Node)) { menu.remove(); document.removeEventListener('click', close); } };
-    setTimeout(() => document.addEventListener('click', close), 0);
+    const close = (ev: Event) => { if (!menu.contains(ev.target as Node)) { menu.remove(); cleanup(); } };
+    const cleanup = () => { document.removeEventListener('click', closeVoid); document.removeEventListener('touchend', closeVoid); };
+    const closeVoid = close as EventListener;
+    setTimeout(() => {
+      document.addEventListener('click', closeVoid);
+      document.addEventListener('touchend', closeVoid);
+    }, 0);
   };
 
+  const showMenu = (e: MouseEvent, items: { text: string; action: () => void }[]) => {
+    e.preventDefault();
+    showMenuAt(e.clientX, e.clientY, items);
+  };
+
+  // --- 触屏长按菜单（移动端无右键）---
+  let sidebarLongPressTimer: ReturnType<typeof setTimeout> | null = null;
+  const clearSidebarLongPress = () => { if (sidebarLongPressTimer) { clearTimeout(sidebarLongPressTimer); sidebarLongPressTimer = null; } };
+
+  function addLongPress(el: HTMLElement, buildItems: () => { text: string; action: () => void }[]) {
+    el.addEventListener('touchstart', (e: TouchEvent) => {
+      clearSidebarLongPress();
+      let moved = false;
+      sidebarLongPressTimer = setTimeout(() => {
+        if (!moved) {
+          const t = (e as any)._startTouch || e.touches[0];
+          showMenuAt(t.clientX, t.clientY, buildItems());
+        }
+      }, 500);
+      if (e.touches[0]) (e as any)._startTouch = e.touches[0];
+    }, { passive: true });
+    el.addEventListener('touchmove', () => { clearSidebarLongPress(); }, { passive: true });
+    el.addEventListener('touchend', () => { clearSidebarLongPress(); });
+    el.addEventListener('touchcancel', () => { clearSidebarLongPress(); });
+  }
+
   // 拖拽文件到文件夹
-  const dragState = { srcPath: '', el: null as HTMLElement | null };
   let lastDropTarget: HTMLElement | null = null;
 
   const renderTree = (items: FileTreeItem[], container: HTMLElement, depth: number, parentPath: string) => {
@@ -96,12 +132,12 @@ export function createSidebar(
 
         const toggle = document.createElement('span');
         const isOpen = openDirs.has(fullPath);
-        toggle.textContent = isOpen ? '▾' : '▸';
-        toggle.style.cssText = 'width:12px;font-size:0.7em;cursor:pointer;flex-shrink:0;';
+        toggle.textContent = isOpen ? '\u25BE' : '\u25B8';
+        toggle.style.cssText = `width:12px;font-size:${V('--fg-font-xs', '0.72em')};cursor:pointer;flex-shrink:0;`;
         toggle.onclick = () => {
           if (openDirs.has(fullPath)) openDirs.delete(fullPath);
           else openDirs.add(fullPath);
-          toggle.textContent = openDirs.has(fullPath) ? '▾' : '▸';
+          toggle.textContent = openDirs.has(fullPath) ? '\u25BE' : '\u25B8';
           renderChildren();
         };
         dirItem.appendChild(toggle);
@@ -124,9 +160,20 @@ export function createSidebar(
             }},
           ]);
         };
+        // 触屏长按菜单
+        addLongPress(dirItem, () => [
+          { text: '新建图', action: async () => {
+            const name = await safePrompt('图文件名（自动加 .json）：');
+            if (name) onNewFile(fullPath + '/' + (name.endsWith('.json') ? name : name + '.json'));
+          }},
+          { text: '新建文件夹', action: async () => {
+            const name = await safePrompt('文件夹名：');
+            if (name) onNewFolder?.(fullPath + '/' + name);
+          }},
+        ]);
 
         // 拖放目标
-        dirItem.addEventListener('dragover', (ev) => { ev.preventDefault(); dirItem.style.background = '#444'; });
+        dirItem.addEventListener('dragover', (ev) => { ev.preventDefault(); dirItem.style.background = V('--fg-button-hover', '#444'); });
         dirItem.addEventListener('dragleave', () => { dirItem.style.background = ''; });
         dirItem.addEventListener('drop', (ev) => {
           ev.preventDefault(); dirItem.style.background = '';
@@ -137,7 +184,7 @@ export function createSidebar(
         container.appendChild(dirItem);
 
         const childrenContainer = document.createElement('div');
-        childrenContainer.style.cssText = `margin-left:${7 + indent}px;border-left:1px solid rgba(255,255,255,0.08);`;
+        childrenContainer.style.cssText = `margin-left:${7 + indent}px;border-left:1px solid ${V('--fg-border-light', 'rgba(255,255,255,0.08)')};`;
         childrenContainer.style.display = 'none';
         container.appendChild(childrenContainer);
 
@@ -154,9 +201,10 @@ export function createSidebar(
       } else {
         const fileItem = document.createElement('div');
         fileItem.draggable = true;
-        fileItem.style.cssText = `display:flex;align-items:center;gap:6px;padding:3px 10px 3px ${10 + 12 + indent}px;cursor:pointer;${fullPath === currentFile ? 'background:#3a3a3a;color:#fff;' : ''}`;
-        fileItem.onmouseenter = () => { if (fullPath !== currentFile) fileItem.style.background = '#333'; };
-        fileItem.onmouseleave = () => { if (fullPath !== currentFile) fileItem.style.background = ''; };
+        const isActive = fullPath === currentFile;
+        fileItem.style.cssText = `display:flex;align-items:center;gap:6px;padding:3px 10px 3px ${10 + 12 + indent - 3}px;cursor:pointer;transition:background var(--fg-transition-fast,0.15s ease);${isActive ? `background:${V('--fg-sidebar-item-active', '#3a3a3a')};color:${V('--fg-text', '#fff')};border-left:3px solid ${V('--fg-accent', '#5B8FF9')};` : ''}`;
+        fileItem.onmouseenter = () => { if (!isActive) fileItem.style.background = V('--fg-sidebar-item-hover', '#333'); };
+        fileItem.onmouseleave = () => { if (!isActive) fileItem.style.background = ''; };
 
         fileItem.addEventListener('dragstart', (ev) => {
           ev.dataTransfer?.setData('text/plain', fullPath);
@@ -185,11 +233,42 @@ export function createSidebar(
               if (newName && newName !== item.name) onRenameFile(fullPath, newName);
             }},
             { text: '创建副本', action: () => { onCopyFile?.(fullPath); } },
-            { text: '删除', action: () => {
-              if (confirm(`确定删除 ${item.name}？`)) onDeleteFile(fullPath);
+            { text: '删除', action: async () => {
+              if (await confirmAction(`确定删除 ${item.name}？`)) onDeleteFile(fullPath);
             }},
           ]);
         };
+        // 触屏长按菜单
+        addLongPress(fileItem, () => {
+          const items: { text: string; action: () => void }[] = [
+            { text: '重命名', action: async () => {
+              const newName = await safePrompt('新文件名：', item.name);
+              if (newName && newName !== item.name) onRenameFile(fullPath, newName);
+            }},
+            { text: '创建副本', action: () => { onCopyFile?.(fullPath); } },
+            { text: '删除', action: async () => {
+              if (await confirmAction(`确定删除 ${item.name}？`)) onDeleteFile(fullPath);
+            }},
+          ];
+          // 移动到文件夹选项（收集所有目录）
+          if (onMoveFile) {
+            const dirs: { name: string; path: string }[] = [];
+            const walkDirs = (items2: typeof treeData, prefix: string) => {
+              for (const it of items2) {
+                if (it.kind === 'directory') {
+                  const p = prefix ? `${prefix}/${it.name}` : it.name;
+                  dirs.push({ name: it.name, path: p });
+                  walkDirs(it.children, p);
+                }
+              }
+            };
+            walkDirs(treeData, '');
+            for (const d of dirs) {
+              items.push({ text: `移动到 ${d.name}`, action: () => onMoveFile(fullPath, d.path) });
+            }
+          }
+          return items;
+        });
 
         container.appendChild(fileItem);
       }
@@ -203,7 +282,7 @@ export function createSidebar(
     if (treeData.length === 0) {
       const empty = document.createElement('div');
       empty.textContent = '（无文件）';
-      empty.style.cssText = 'padding:20px;color:#666;text-align:center;';
+      empty.style.cssText = `padding:20px;color:${V('--fg-text-dim', '#666')};text-align:center;`;
       fileTree.appendChild(empty);
     } else {
       renderTree(treeData, fileTree, 0, '');
@@ -224,28 +303,47 @@ export function createSidebar(
       }},
     ]);
   };
+  // 触屏长按（空白区域）
+  addLongPress(fileTree, () => [
+    { text: '新建图', action: async () => {
+      const name = await safePrompt('输入图文件名（自动加 .json）：');
+      if (name) onNewFile(name.endsWith('.json') ? name : name + '.json');
+    }},
+    { text: '新建文件夹', action: async () => {
+      const name = await safePrompt('文件夹名：');
+      if (name) onNewFolder?.(name);
+    }},
+  ]);
 
   collapseBtn.onclick = () => {
     collapsed = !collapsed;
+    sidebar.style.transition = 'width 0.25s ease, min-width 0.25s ease';
     if (collapsed) {
-      sidebar.style.width = '32px'; sidebar.style.minWidth = '32px';
+      // 先隐藏内容，再触发宽度动画
       title.style.display = 'none'; newRow.style.display = 'none';
       fileTree.style.display = 'none'; settingsSection.style.display = 'none';
-      collapseBtn.textContent = '▸';
+      requestAnimationFrame(() => {
+        sidebar.style.width = `${SIDEBAR_COLLAPSED_WIDTH}px`; sidebar.style.minWidth = `${SIDEBAR_COLLAPSED_WIDTH}px`;
+      });
+      collapseBtn.textContent = '\u25B8';
     } else {
-      sidebar.style.width = '240px'; sidebar.style.minWidth = '180px';
-      title.style.display = ''; newRow.style.display = '';
-      fileTree.style.display = ''; settingsSection.style.display = '';
-      collapseBtn.textContent = '✕';
+      sidebar.style.width = `${getResponsiveSidebarWidth()}px`; sidebar.style.minWidth = `${SIDEBAR_MIN_WIDTH}px`;
+      // 动画结束后再显示内容
+      setTimeout(() => {
+        title.style.display = ''; newRow.style.display = '';
+        fileTree.style.display = ''; settingsSection.style.display = '';
+      }, 260);
+      collapseBtn.textContent = '\u2715';
     }
+    window.dispatchEvent(new CustomEvent('sidebar-toggle', { detail: { collapsed } }));
   };
 
   // --- 设置按钮 ---
   const settingsSection = document.createElement('div');
-  settingsSection.style.cssText = 'border-top:1px solid #444;margin-top:auto;';
+  settingsSection.style.cssText = `border-top:1px solid ${V('--fg-border-light', 'rgba(255,255,255,0.08)')};margin-top:auto;`;
   const presetHeader = document.createElement('div');
   presetHeader.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:8px 10px;cursor:pointer;';
-  presetHeader.innerHTML = '<span style="font-weight:bold;color:#999;font-size:0.8em;">应用设置</span>';
+  presetHeader.innerHTML = `<span style="font-weight:bold;color:${V('--fg-text-muted', '#999')};font-size:${V('--fg-font-sm', '0.8em')};">应用设置</span>`;
   presetHeader.onclick = () => callbacks.onApplyPreset?.('');
   settingsSection.appendChild(presetHeader);
 

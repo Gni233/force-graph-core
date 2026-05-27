@@ -1,12 +1,100 @@
 /**
  * 多媒体节点：在画布上方叠加 HTML 元素显示图片/音频/视频/MD
  */
+
+const V = (name: string, fallback: string) => `var(${name},${fallback})`;
+
 export interface MediaOverlay {
   el: HTMLElement;
   nodeId: string;
   type: 'image' | 'audio' | 'video' | 'md';
   offsetX: number;
   offsetY: number;
+}
+
+// 全局拖拽状态：HarmonyOS WebView 不支持 pointer capture，用全局标记代替
+let globalDragType: 'move' | 'resize' | null = null;
+let globalDragTarget: HTMLElement | null = null;
+let globalDragSX = 0, globalDragSY = 0, globalDragOX = 0, globalDragOY = 0;
+let globalDragSW = 0, globalDragSH = 0;
+let globalDragOV: MediaOverlay | null = null;
+let globalDragOnStart: (() => void) | undefined;
+let globalDragOnEnd: (() => void) | undefined;
+
+// 全局 pointer/touch 监听（capture 阶段，viewport 之前拦截）
+window.addEventListener('pointerdown', (e) => {
+  if (globalDragType) return;
+}, { capture: true });
+window.addEventListener('touchstart', (e) => {
+  if (globalDragType) return;
+}, { capture: true });
+
+window.addEventListener('pointermove', (e) => {
+  if (!globalDragType || !globalDragTarget) return;
+  e.preventDefault();
+  if (globalDragType === 'move' && globalDragOV) {
+    globalDragOV.offsetX = globalDragOX + (e.clientX - globalDragSX);
+    globalDragOV.offsetY = globalDragOY + (e.clientY - globalDragSY);
+    const el = globalDragTarget;
+    el.style.left = (parseFloat(el.style.left) || 0) + (e.clientX - globalDragSX) + 'px';
+    el.style.top = (parseFloat(el.style.top) || 0) + (e.clientY - globalDragSY) + 'px';
+    globalDragSX = e.clientX; globalDragSY = e.clientY;
+    globalDragOX = globalDragOV.offsetX; globalDragOY = globalDragOV.offsetY;
+  } else if (globalDragType === 'resize') {
+    const el = globalDragTarget!;
+    const type = el.getAttribute('data-media-type') as string;
+    let dw = Math.max(120, globalDragSW + (e.clientX - globalDragSX));
+    let dh = Math.max(60, globalDragSH + (e.clientY - globalDragSY));
+    if (type === 'image' || type === 'video') {
+      const ratio = globalDragSW / Math.max(1, globalDragSH);
+      if (Math.abs(e.clientX - globalDragSX) > Math.abs(e.clientY - globalDragSY)) {
+        dh = Math.max(60, dw / ratio);
+      } else {
+        dw = Math.max(120, dh * ratio);
+      }
+    }
+    el.style.width = dw + 'px';
+    el.style.height = dh + 'px';
+    el.querySelectorAll('img, video, iframe, .media-body, [contenteditable]').forEach((inner) => {
+      const iw = dw - 16, ih = dh - 30;
+      (inner as HTMLElement).style.maxWidth = iw + 'px';
+      (inner as HTMLElement).style.maxHeight = ih + 'px';
+      (inner as HTMLElement).style.width = iw + 'px';
+      (inner as HTMLElement).style.height = ih + 'px';
+    });
+    const audio = el.querySelector('audio');
+    if (audio) { (audio as HTMLElement).style.width = (dw - 16) + 'px'; }
+  }
+});
+window.addEventListener('touchmove', (e) => {
+  if (!globalDragType || !globalDragTarget) return;
+  e.preventDefault();
+  const pt = e.touches[0];
+  if (!pt) return;
+  if (globalDragType === 'move' && globalDragOV) {
+    globalDragOV.offsetX = globalDragOX + (pt.clientX - globalDragSX);
+    globalDragOV.offsetY = globalDragOY + (pt.clientY - globalDragSY);
+    const el = globalDragTarget;
+    el.style.left = (parseFloat(el.style.left) || 0) + (pt.clientX - globalDragSX) + 'px';
+    el.style.top = (parseFloat(el.style.top) || 0) + (pt.clientY - globalDragSY) + 'px';
+    globalDragSX = pt.clientX; globalDragSY = pt.clientY;
+    globalDragOX = globalDragOV.offsetX; globalDragOY = globalDragOV.offsetY;
+  }
+}, { passive: false });
+
+window.addEventListener('pointerup', () => { if (globalDragType) { globalDragOnEnd?.(); globalDragType = null; } });
+window.addEventListener('touchend', () => { if (globalDragType) { globalDragOnEnd?.(); globalDragType = null; } });
+window.addEventListener('touchcancel', () => { if (globalDragType) { globalDragOnEnd?.(); globalDragType = null; } });
+
+function setGlobalDragState(type: 'move' | 'resize', el: HTMLElement, sx: number, sy: number, ov?: MediaOverlay, onStart?: () => void, onEnd?: () => void) {
+  globalDragType = type;
+  globalDragTarget = el;
+  globalDragSX = sx; globalDragSY = sy;
+  globalDragOnStart = onStart;
+  globalDragOnEnd = onEnd;
+  if (ov) { globalDragOV = ov; globalDragOX = ov.offsetX; globalDragOY = ov.offsetY; }
+  if (type === 'resize') { globalDragSW = el.offsetWidth; globalDragSH = el.offsetHeight; }
+  onStart?.();
 }
 
 const overlays: Map<string, MediaOverlay> = new Map();
@@ -33,8 +121,10 @@ export function showMedia(
   el.setAttribute('data-media-id', nodeId);
   el.style.cssText =
     'position:absolute;z-index:15;border:3px solid ' + borderColor + ';' +
-    'border-radius:0 8px 8px 8px;overflow:visible;background:rgba(40,42,48,0.92);' +
-    'pointer-events:auto;touch-action:none;box-shadow:0 4px 16px rgba(0,0,0,0.3);';
+    `border-radius:0 ${V('--fg-radius-md','8px')} ${V('--fg-radius-md','8px')} ${V('--fg-radius-md','8px')};` +
+    `overflow:visible;background:${V('--fg-surface-elevated','rgba(40,42,48,0.92)')};` +
+    `pointer-events:auto;touch-action:none;box-shadow:${V('--fg-shadow-md','0 4px 16px rgba(0,0,0,0.3)')};` +
+    `transition:background var(--fg-transition,0.25s ease);`;
   const fileUrl = toFileUrl(url);
 
   // 节点名标签（左上角伸出）
@@ -50,7 +140,7 @@ export function showMedia(
   const handle = document.createElement('div');
   handle.style.cssText =
     'display:flex;align-items:center;justify-content:center;height:24px;' +
-    'cursor:move;border-bottom:1px solid rgba(255,255,255,0.1);padding:2px 0;' +
+    `cursor:move;border-bottom:1px solid ${V('--fg-glass-border','rgba(255,255,255,0.1)')};padding:2px 0;` +
     'touch-action:none;user-select:none;-webkit-user-select:none;';
   const dot = document.createElement('div');
   dot.style.cssText = 'width:5px;height:5px;border-radius:50%;background:rgba(255,255,255,0.3);';
@@ -107,7 +197,7 @@ export function showMedia(
     mdDiv.style.cssText += 'margin-left:18px;';
     mdDiv.contentEditable = 'true';
     mdDiv.style.cssText =
-      'max-width:340px;max-height:320px;overflow-y:auto;padding:8px;color:#d0d0d0;font-size:0.85em;white-space:pre-wrap;outline:none;';
+      `max-width:340px;max-height:320px;overflow-y:auto;padding:8px;color:${V('--fg-text','#d0d0d0')};font-size:0.85em;white-space:pre-wrap;outline:none;`;
     mdDiv.textContent = url || '(点击编辑)';
     let mdSaveTimer: any;
     mdDiv.addEventListener('input', () => {
@@ -125,71 +215,35 @@ export function showMedia(
   const closeBtn = document.createElement('div');
   closeBtn.textContent = '\u00D7';
   closeBtn.style.cssText =
-    'position:absolute;top:0;right:6px;font-size:1.4em;opacity:0.5;cursor:pointer;color:#ccc;line-height:1;padding:0 2px;z-index:1;';
+    `position:absolute;top:0;right:6px;font-size:1.4em;opacity:0.5;cursor:pointer;color:${V('--fg-text','#ccc')};line-height:1;padding:0 2px;z-index:1;`;
   closeBtn.onclick = () => hideMedia(nodeId);
   closeBtn.onmouseenter = () => { closeBtn.style.opacity = '1'; };
   closeBtn.onmouseleave = () => { closeBtn.style.opacity = '0.5'; };
   el.appendChild(closeBtn);
 
+  // 存储 media type 到 DOM，resize 需要
+  el.setAttribute('data-media-type', type);
+
   // 伸缩手柄（右下角圆点）
   const resizer = document.createElement('div');
   resizer.style.cssText =
-    'position:absolute;right:4px;bottom:4px;width:10px;height:10px;border-radius:50%;' +
+    'position:absolute;right:4px;bottom:4px;width:12px;height:12px;border-radius:50%;' +
     'background:rgba(255,255,255,0.3);cursor:nwse-resize;z-index:2;touch-action:none;user-select:none;';
-  let resizing = false, rsx = 0, rsy = 0, rsw = 0, rsh = 0;
   resizer.addEventListener('dblclick', () => {
     el.style.width = ''; el.style.height = '';
   });
 
-  const startResize = (e: PointerEvent | TouchEvent) => {
+  const startResize = (pt: { clientX: number; clientY: number }) => {
+    setGlobalDragState('resize', el, pt.clientX, pt.clientY, undefined, onDragStart, onDragEnd);
+  };
+  resizer.addEventListener('pointerdown', (e) => {
     e.preventDefault(); e.stopPropagation();
-    const pt = 'touches' in e ? e.touches[0] : e as PointerEvent;
-    if (!pt) return;
-    resizer.setPointerCapture?.((e as PointerEvent).pointerId);
-    resizing = true; rsx = pt.clientX; rsy = pt.clientY;
-    rsw = el.offsetWidth; rsh = el.offsetHeight;
-    onDragStart?.();
-  };
-
-  const moveResize = (e: PointerEvent | TouchEvent) => {
-    if (!resizing) return;
-    e.preventDefault();
-    const pt = 'touches' in e ? e.touches[0] : e as PointerEvent;
-    if (!pt) return;
-    let dw = Math.max(120, rsw + (pt.clientX - rsx));
-    let dh = Math.max(60, rsh + (pt.clientY - rsy));
-    if (type === 'image' || type === 'video') {
-      const ratio = rsw / Math.max(1, rsh);
-      if (Math.abs(pt.clientX - rsx) > Math.abs(pt.clientY - rsy)) {
-        dh = Math.max(60, dw / ratio);
-      } else {
-        dw = Math.max(120, dh * ratio);
-      }
-    }
-    el.style.width = dw + 'px';
-    el.style.height = dh + 'px';
-    el.querySelectorAll('img, video, iframe, .media-body, [contenteditable]').forEach((inner) => {
-      const iw = dw - 16, ih = dh - 30;
-      (inner as HTMLElement).style.maxWidth = iw + 'px';
-      (inner as HTMLElement).style.maxHeight = ih + 'px';
-      (inner as HTMLElement).style.width = iw + 'px';
-      (inner as HTMLElement).style.height = ih + 'px';
-    });
-    const audio = el.querySelector('audio');
-    if (audio) { (audio as HTMLElement).style.width = (dw - 16) + 'px'; }
-  };
-
-  const endResize = () => {
-    if (resizing) { resizing = false; onDragEnd?.(); }
-  };
-
-  resizer.addEventListener('pointerdown', startResize);
-  resizer.addEventListener('touchstart', startResize, { passive: false });
-  window.addEventListener('pointermove', moveResize);
-  window.addEventListener('touchmove', moveResize, { passive: false });
-  window.addEventListener('pointerup', endResize);
-  window.addEventListener('touchend', endResize);
-  window.addEventListener('touchcancel', endResize);
+    startResize(e);
+  });
+  resizer.addEventListener('touchstart', (e) => {
+    e.preventDefault(); e.stopPropagation();
+    if (e.touches[0]) startResize(e.touches[0]);
+  }, { passive: false });
   el.appendChild(resizer);
 
   container.appendChild(el);
@@ -197,43 +251,20 @@ export function showMedia(
   const ov: MediaOverlay = { el, nodeId, type, offsetX: 0, offsetY: 0 };
   overlays.set(nodeId, ov);
 
-  // 拖拽逻辑
-  let dragging = false, sx = 0, sy = 0, ox = 0, oy = 0;
+  // 拖拽逻辑 - 使用全局状态，不依赖 pointer capture
   handle.addEventListener('dblclick', () => { ov.offsetX = 0; ov.offsetY = 0; });
 
-  const startDrag = (e: PointerEvent | TouchEvent) => {
+  const startDrag = (pt: { clientX: number; clientY: number }) => {
+    setGlobalDragState('move', el, pt.clientX, pt.clientY, ov, onDragStart, onDragEnd);
+  };
+  handle.addEventListener('pointerdown', (e) => {
     e.preventDefault(); e.stopPropagation();
-    const pt = 'touches' in e ? e.touches[0] : e as PointerEvent;
-    if (!pt) return;
-    handle.setPointerCapture?.((e as PointerEvent).pointerId);
-    dragging = true; sx = pt.clientX; sy = pt.clientY; ox = ov.offsetX; oy = ov.offsetY;
-    onDragStart?.();
-  };
-
-  const moveDrag = (e: PointerEvent | TouchEvent) => {
-    if (!dragging) return;
-    e.preventDefault();
-    const pt = 'touches' in e ? e.touches[0] : e as PointerEvent;
-    if (!pt) return;
-    ov.offsetX = ox + (pt.clientX - sx);
-    ov.offsetY = oy + (pt.clientY - sy);
-    el.style.left = (parseFloat(el.style.left) || 0) + (pt.clientX - sx) + 'px';
-    el.style.top = (parseFloat(el.style.top) || 0) + (pt.clientY - sy) + 'px';
-    sx = pt.clientX; sy = pt.clientY;
-    ox = ov.offsetX; oy = ov.offsetY;
-  };
-
-  const endDrag = () => {
-    if (dragging) { dragging = false; onDragEnd?.(); }
-  };
-
-  handle.addEventListener('pointerdown', startDrag);
-  handle.addEventListener('touchstart', startDrag, { passive: false });
-  window.addEventListener('pointermove', moveDrag);
-  window.addEventListener('touchmove', moveDrag, { passive: false });
-  window.addEventListener('pointerup', endDrag);
-  window.addEventListener('touchend', endDrag);
-  window.addEventListener('touchcancel', endDrag);
+    startDrag(e);
+  });
+  handle.addEventListener('touchstart', (e) => {
+    e.preventDefault(); e.stopPropagation();
+    if (e.touches[0]) startDrag(e.touches[0]);
+  }, { passive: false });
 
   positionMedia(nodeId, getWorldPos);
 }

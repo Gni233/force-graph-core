@@ -8,12 +8,14 @@ import { setupCanvasEvents } from './ui-events';
 import { showContextMenu } from './ui-contextmenu';
 import { createEditPanel } from './ui-edit';
 import { buildSettings } from './ui-settings';
-import { getTheme, ThemeConfig } from './theme';
+import { getTheme, applyThemeVars, ThemeConfig } from './theme';
 import { createSidebar } from './ui-sidebar';
 import { createTabBar } from './ui-tabs';
 import { openFolder, restoreFolder, listFileTree, flatFilePaths, readGraphFile, writeGraphFile, deleteFile, renameFile } from './file-system';
 import { saveFolderHandle, loadFolderHandle, clearFolderHandle } from './folder-store';
-import { isCapacitor, openFolderMobile, listFilesMobile, readFileMobile, writeFileMobile, deleteFileMobile } from './fs-mobile';
+import { isCapacitor, createFileImporter, listFilesMobile, readFileMobile, writeFileMobile, deleteFileMobile, downloadApk, downloadReleaseApk } from './fs-mobile';
+import { isHarmonyOS } from './utils/platform';
+import { listFilesHarmony, readFileHarmony, writeFileHarmony, deleteFileHarmony, createHarmonyFileImporter } from './fs-harmony';
 import { safePrompt } from './dialog';
 import { checkUpdate, UpdateInfo } from './update-checker';
 import { showUpdateDialog } from './update-dialog';
@@ -22,6 +24,10 @@ import { BlurFilter, Graphics } from 'pixi.js';
 import { createThresholdFilter } from './pixi-fluid';
 import { showMedia, positionMedia, hideMedia, isExpanded, clearAllMedia } from './media-nodes';
 import { createSettingsPanel } from './settings-panel';
+import { UndoManager } from './undo-redo';
+import { showToast, confirmAction } from './toast';
+import { startNodeAnimation } from './utils/animate-nodes';
+import { SIDEBAR_LEFT, SIDEBAR_WIDTH, SIDEBAR_COLLAPSED_WIDTH, SIDEBAR_MIN_WIDTH, sidebarExpandedLeft, sidebarCollapsedLeft, getResponsiveSidebarWidth, Z_CANVAS, Z_LOADING, Z_FLOATING_UI, Z_MEDIA_OVERLAY, Z_EDIT_PANEL, Z_SELECTION_BOX, Z_SETTINGS_PANEL, Z_DROPDOWN, Z_CONTEXT_MENU, Z_WINDOW_CONTROLS, Z_STATS, Z_TOAST, WIN_CONTROLS_WIDTH, LAYOUT_ANIM_DURATION, SEARCH_MOVE_DURATION, FIT_ALL_DURATION } from './layout-constants';
 (window as any).__triggerSave = () => {};
 import { createPixiApp, PixiLayers } from './pixi-app';
 import { createNodeSprite, updateNodePosition, applyNodeVisual, NodeSprite, NodeVisualState } from './pixi-nodes';
@@ -43,34 +49,39 @@ async function main() {
   const appEl = document.getElementById('app');
   if (!appEl) return;
 
+  // CSS variable helper for inline styles (fallback for pre-theme state)
+  const V = (name: string, fallback: string) => `var(${name},${fallback})`;
+
   // ===== 布局：全屏画布 + 玻璃悬浮 UI =====
   const appShell = document.createElement('div');
   appShell.style.cssText = 'position:relative;width:100vw;height:100vh;overflow:hidden;';
   appEl.appendChild(appShell);
 
-  // 玻璃效果 CSS 片段
-  const glassCSS = 'background:rgba(40,42,48,0.65);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border:1px solid rgba(255,255,255,0.08);border-radius:8px;color:#d0d0d0;';
+  // 玻璃效果现在通过 CSS 类 .fg-glass 实现，定义在 index.html 中
+  // 所有 UI 组件使用 CSS 变量 var(--fg-xxx)，由 applyThemeVars() 统一设置
 
-  // --- 窗口控制按钮（最小化 / 最大化 / 关闭）---
-  const winCtrls = document.createElement('div');
-  winCtrls.style.cssText = 'position:absolute;top:4px;right:6px;z-index:200;display:flex;gap:4px;';
-  appShell.appendChild(winCtrls);
-
-  function makeWinBtn(label: string, hoverBg: string) {
-    const btn = document.createElement('button');
-    btn.textContent = label;
-    btn.style.cssText = `width:30px;height:26px;border:none;${glassCSS}display:flex;align-items:center;justify-content:center;font-size:13px;line-height:1;cursor:pointer;padding:0;transition:background 0.15s;border-radius:6px;`;
-    btn.addEventListener('mouseenter', () => { btn.style.background = hoverBg; });
-    btn.addEventListener('mouseleave', () => { btn.style.background = 'rgba(40,42,48,0.65)'; });
-    return btn;
-  }
-
-  const btnMin = makeWinBtn('\u2500', 'rgba(255,255,255,0.12)'); // ─
-  const btnMax = makeWinBtn('\u25A1', 'rgba(255,255,255,0.12)'); // □
-  const btnClose = makeWinBtn('\u2715', 'rgba(232,68,68,0.85)'); // ✕
-
+  // --- 窗口控制按钮（仅 Electron 桌面端）---
   const isElectron = !!(window as any).electronAPI;
+  const floatingRight = isElectron ? `${WIN_CONTROLS_WIDTH + 6}px` : '6px';
+
   if (isElectron) {
+    const winCtrls = document.createElement('div');
+    winCtrls.style.cssText = `position:absolute;top:4px;right:6px;z-index:${Z_WINDOW_CONTROLS};display:flex;gap:4px;`;
+
+    function makeWinBtn(label: string, hoverBg: string) {
+      const btn = document.createElement('button');
+      btn.textContent = label;
+      btn.className = 'fg-glass';
+      btn.style.cssText = 'width:30px;height:26px;border:none;display:flex;align-items:center;justify-content:center;font-size:13px;line-height:1;cursor:pointer;padding:0;transition:background 0.15s;border-radius:6px;';
+      btn.addEventListener('mouseenter', () => { btn.style.background = hoverBg; });
+      btn.addEventListener('mouseleave', () => { btn.style.background = ''; });
+      return btn;
+    }
+
+    const btnMin = makeWinBtn('\u2500', 'rgba(255,255,255,0.12)'); // ─
+    const btnMax = makeWinBtn('\u25A1', 'rgba(255,255,255,0.12)'); // □
+    const btnClose = makeWinBtn('\u2715', 'rgba(232,68,68,0.85)'); // ✕
+
     const api = (window as any).electronAPI;
     btnMin.addEventListener('click', () => api.minimizeWindow());
     btnMax.addEventListener('click', () => api.maximizeWindow());
@@ -78,19 +89,22 @@ async function main() {
     api.onMaximizeChange((maximized: boolean) => {
       btnMax.textContent = maximized ? '\u25A3' : '\u25A1'; // ▣ / □
     });
-  }
 
-  winCtrls.appendChild(btnMin);
-  winCtrls.appendChild(btnMax);
-  winCtrls.appendChild(btnClose);
+    winCtrls.appendChild(btnMin);
+    winCtrls.appendChild(btnMax);
+    winCtrls.appendChild(btnClose);
+    appShell.appendChild(winCtrls);
+  }
 
   // --- 浮动顶栏（标签 + 搜索 + 操作）---
   const floatingTop = document.createElement('div');
-  floatingTop.style.cssText = `position:absolute;left:248px;top:6px;right:146px;z-index:10;display:flex;flex-direction:column;gap:4px;padding:4px 8px 6px 8px;${glassCSS}`;
+  floatingTop.className = 'fg-glass';
+  floatingTop.className = 'fg-glass' + (isElectron ? ' fg-drag-region' : '');
+  floatingTop.style.cssText = `position:absolute;left:${sidebarExpandedLeft()}px;top:6px;right:${floatingRight};z-index:${Z_FLOATING_UI};display:flex;flex-direction:column;gap:4px;padding:4px 8px 6px 8px;transition:left 0.25s ease;`;
   appShell.appendChild(floatingTop);
 
   // --- 标签栏 ---
-  let renderTabs: (tabs: string[], active: string) => void;
+  let renderTabs: (tabs: string[], active: string, dirtyFiles?: Set<string>) => void;
   const tabBarInit = createTabBar(floatingTop, {
     onSwitchTab: (fileName) => { switchTab(fileName); },
     onCloseTab: (fileName) => { closeTab(fileName); },
@@ -98,7 +112,7 @@ async function main() {
     onReorder: (from, to) => {
       const item = openTabs.splice(from, 1)[0];
       openTabs.splice(to, 0, item);
-      renderTabs(openTabs, activeTab);
+      renderAllTabs();
       persistTabs();
     },
   });
@@ -106,29 +120,42 @@ async function main() {
 
   // --- 搜索栏 ---
   const searchRow = document.createElement('div');
-  searchRow.style.cssText = 'display:flex;gap:8px;align-items:center;flex-wrap:wrap;flex-shrink:0;';
+  searchRow.style.cssText = 'display:flex;gap:4px;align-items:center;flex-wrap:wrap;flex-shrink:0;';
+  const searchLabel = document.createElement('span');
+  searchLabel.textContent = '搜索:';
+  searchLabel.style.cssText = `font-size:${V('--fg-font-sm', '0.8em')};color:${V('--fg-text-muted', '#999')};flex-shrink:0;`;
+  searchRow.appendChild(searchLabel);
   const fieldSelect = document.createElement('select');
-  fieldSelect.style.cssText = 'font-size:0.85em;';
-  ['名称', '标签', '内容'].forEach((t, i) => { const o = document.createElement('option'); o.value = ['name', 'tags', 'note'][i]; o.textContent = t; fieldSelect.appendChild(o); });
+  fieldSelect.style.cssText = `font-size:${V('--fg-font-sm', '0.8em')};`;
+  ['名', '签', '内'].forEach((t, i) => { const o = document.createElement('option'); o.value = ['name', 'tags', 'note'][i]; o.textContent = t; o.title = ['名称', '标签', '内容'][i]; fieldSelect.appendChild(o); });
   searchRow.appendChild(fieldSelect);
   const matchModeSelect = document.createElement('select');
-  matchModeSelect.style.cssText = 'font-size:0.85em;';
-  ['包含', '开头', '结尾', '模糊'].forEach((t, i) => { const o = document.createElement('option'); o.value = ['contains', 'startsWith', 'endsWith', 'fuzzy'][i]; o.textContent = t; matchModeSelect.appendChild(o); });
+  matchModeSelect.style.cssText = `font-size:${V('--fg-font-sm', '0.8em')};`;
+  ['含', '头', '尾', '模'].forEach((t, i) => { const o = document.createElement('option'); o.value = ['contains', 'startsWith', 'endsWith', 'fuzzy'][i]; o.textContent = t; o.title = ['包含', '开头', '结尾', '模糊'][i]; matchModeSelect.appendChild(o); });
   searchRow.appendChild(matchModeSelect);
   const modeSelect = document.createElement('select');
-  modeSelect.style.cssText = 'font-size:0.85em;';
-  ['高亮', '只显示'].forEach((t, i) => { const o = document.createElement('option'); o.value = ['highlight', 'show'][i]; o.textContent = t; modeSelect.appendChild(o); });
+  modeSelect.style.cssText = `font-size:${V('--fg-font-sm', '0.8em')};`;
+  ['亮', '仅'].forEach((t, i) => { const o = document.createElement('option'); o.value = ['highlight', 'show'][i]; o.textContent = t; o.title = ['高亮', '只显示'][i]; modeSelect.appendChild(o); });
   searchRow.appendChild(modeSelect);
   const searchInput = document.createElement('input');
   searchInput.type = 'text'; searchInput.placeholder = '搜索...';
-  searchInput.style.cssText = 'flex:1;min-width:120px;font-size:0.85em;padding:2px 6px;border:1px solid #ccc;border-radius:4px;';
+  searchInput.style.cssText = `flex:1;min-width:80px;font-size:${V('--fg-font-sm', '0.8em')};padding:2px 6px;`;
   searchRow.appendChild(searchInput);
+  const searchStatus = document.createElement('span');
+  searchStatus.style.cssText = `font-size:${V('--fg-font-xs', '0.72em')};color:${V('--fg-danger','#e03030')};display:none;white-space:nowrap;`;
+  searchRow.appendChild(searchStatus);
   floatingTop.appendChild(searchRow);
 
-  // --- 操作栏 ---
+  // --- 主要操作按钮行（始终可见）---
+  const primaryRow = document.createElement('div');
+  primaryRow.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;align-items:center;flex-shrink:0;';
+  floatingTop.appendChild(primaryRow);
+
+  // --- 操作栏（折叠区：低频操作）---
   const controlsDetails = document.createElement('details');
   const controlsSum = document.createElement('summary');
-  controlsSum.textContent = '操作';
+  controlsSum.textContent = '更多操作';
+  controlsSum.style.cssText = `font-size:${V('--fg-font-sm', '0.8em')};cursor:pointer;`;
   controlsDetails.appendChild(controlsSum);
   const controlsDiv = document.createElement('div');
   controlsDiv.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;align-items:center;padding:4px 0;';
@@ -137,21 +164,36 @@ async function main() {
 
   // --- PixiJS 画布容器（全屏背景）---
   const pixiContainer = document.createElement('div');
-  pixiContainer.style.cssText = 'position:absolute;top:0;left:0;right:0;bottom:0;z-index:0;overflow:hidden;';
+  pixiContainer.style.cssText = `position:absolute;top:0;left:0;right:0;bottom:0;z-index:${Z_CANVAS};overflow:hidden;`;
   appShell.appendChild(pixiContainer);
+
+  // 统计栏
+  const statsEl = document.createElement('div');
+  statsEl.style.cssText = `position:fixed;right:10px;bottom:4px;z-index:${Z_STATS};font-size:${V('--fg-font-xs', '0.72em')};color:${V('--fg-text-muted','#aaa')};pointer-events:none;`;
+  document.body.appendChild(statsEl);
+
+  // 加载遮罩
+  const loadingOverlay = document.createElement('div');
+  loadingOverlay.style.cssText = `position:absolute;inset:0;z-index:${Z_LOADING};background:rgba(0,0,0,0.3);display:none;align-items:center;justify-content:center;font-size:1.2em;color:${V('--fg-text-muted','#999')};`;
+  loadingOverlay.textContent = '加载中...';
+  appShell.appendChild(loadingOverlay);
 
   // 多媒体覆盖层容器
   const mediaOverlayContainer = document.createElement('div');
-  mediaOverlayContainer.style.cssText = 'position:fixed;top:0;left:0;z-index:15;pointer-events:none;';
+  mediaOverlayContainer.style.cssText = `position:fixed;top:0;left:0;z-index:${Z_MEDIA_OVERLAY};pointer-events:none;`;
   document.body.appendChild(mediaOverlayContainer);
 
   // PixiJS 初始化（异步）
   let pixi: PixiLayers | null = null;
-  const pixiReady = createPixiApp(pixiContainer).then(p => { pixi = p; return p; });
+  const pixiReady = createPixiApp(pixiContainer).then(p => {
+    pixi = p;
+    pixi.onContextRestored = () => { simManager.initSim(); draw(); };
+    return p;
+  });
 
   // 框选矩形
   const selectionBox = document.createElement('div');
-  selectionBox.style.cssText = 'position:absolute;border:2px dashed #5B8FF9;background:rgba(91,143,249,0.1);display:none;pointer-events:none;z-index:20;';
+  selectionBox.style.cssText = `position:absolute;border:2px dashed ${V('--fg-accent','#5B8FF9')};background:rgba(91,143,249,0.1);display:none;pointer-events:none;z-index:${Z_SELECTION_BOX};`;
   appShell.appendChild(selectionBox);
 
   // --- 设置折叠区 ---
@@ -162,32 +204,51 @@ async function main() {
   const setDiv = document.createElement('div');
   setDiv.style.cssText = 'padding:4px 0;';
   settingsDet.appendChild(setDiv);
-  settingsDet.style.cssText = `position:absolute;left:248px;right:6px;bottom:6px;z-index:10;max-height:40vh;overflow-y:auto;padding:4px 10px;${glassCSS}`;
+  settingsDet.className = 'fg-glass';
+  settingsDet.style.cssText = `position:absolute;left:${sidebarExpandedLeft()}px;right:${floatingRight};bottom:6px;z-index:${Z_FLOATING_UI};max-height:40vh;overflow-y:auto;padding:4px 10px;`;
   appShell.appendChild(settingsDet);
 
   // --- 主题应用函数 ---
+  // 通过 CSS 变量统一控制所有 UI 组件的颜色，无需逐元素 querySelectorAll
   const applyTheme = (t: ThemeConfig) => {
+    applyThemeVars(document.documentElement, t);
     document.body.style.background = t.canvasBackground;
-    const rs = document.documentElement.style;
-    rs.setProperty('--fg-bg', t.uiInputBackground);
-    rs.setProperty('--fg-border', t.uiInputBorder);
-    rs.setProperty('--fg-hover', t.uiButtonBackground);
     pixiContainer.style.background = t.canvasBackground;
-    [floatingTop, settingsDet].forEach(el => {
-      el.querySelectorAll('button').forEach((b: any) => { b.style.background = t.uiButtonBackground; b.style.color = t.uiButtonTextColor; b.style.border = `1px solid ${t.uiInputBorder}`; });
-      el.querySelectorAll('input, select, textarea').forEach((i: any) => { i.style.background = t.uiInputBackground; i.style.color = t.uiInputTextColor; i.style.border = `1px solid ${t.uiInputBorder}`; });
-    });
-    settingsDet.querySelectorAll('details').forEach((d: any) => { d.style.background = t.uiPanelBackground; d.style.color = t.uiButtonTextColor; });
-    searchRow.style.background = 'transparent';
     const ea = (window as any).electronAPI;
     if (ea?.setTitlebarColor) ea.setTitlebarColor(t.canvasBackground);
   };
+
+  // --- 检测 backdrop-filter 支持（鸿蒙/HarmonyOS WebView 不支持）---
+  const supportsBackdrop = CSS.supports('backdrop-filter', 'blur(1px)') || CSS.supports('-webkit-backdrop-filter', 'blur(1px)');
+  if (!supportsBackdrop) {
+    // 将所有玻璃面板降级为实色背景
+    document.documentElement.style.setProperty('--fg-surface-glass', 'var(--fg-surface)');
+    document.documentElement.style.setProperty('--fg-surface-elevated', 'var(--fg-surface)');
+  }
 
   // ===== 侧边栏 =====
   let openTabs: string[] = [];
   let activeTab = 'demo';
   let fileSystemMountPath: string | null = null; // Electron 模式下的文件夹路径
   const capApp = isCapacitor();
+  const isHarmony = !capApp && isHarmonyOS();
+
+  // Capacitor / 鸿蒙 文件导入器（label for+id 关联 input，真实点击触发原生选择器）
+  let fileImporterEl: HTMLElement | null = null;
+  if (capApp) {
+    const { label } = createFileImporter(async () => {
+      fileSystemMountPath = 'graphs';
+      await refreshFileTree();
+    });
+    fileImporterEl = label;
+  }
+  if (isHarmony) {
+    // 鸿蒙：使用 localStorage 导入（无需 Capacitor 桥）
+    const { label } = createHarmonyFileImporter(async () => {
+      await refreshFileTree();
+    });
+    fileImporterEl = label;
+  }
 
   // 存储适配器：所有图统一走 localStorage
   const readGraphData = async (fileName: string): Promise<GraphData | null> => {
@@ -251,6 +312,8 @@ async function main() {
       const empty: GraphData = { nodes: [], edges: [], groups: [], settings: presetSettings };
       if (capApp) {
         await writeFileMobile(path, empty);
+      } else if (isHarmony) {
+        await writeFileHarmony(path, empty);
       } else {
         await writeGraphFile(path, empty);
       }
@@ -259,13 +322,14 @@ async function main() {
     },
     onDeleteFile: async (path) => {
       if (capApp) { await deleteFileMobile(path); }
+      else if (isHarmony) { await deleteFileHarmony(path); }
       else { await deleteFile(path); }
       openTabs = openTabs.filter(t => t !== path);
       if (activeTab === path) {
         activeTab = openTabs.length > 0 ? openTabs[openTabs.length - 1] : 'demo';
         await loadGraphData(activeTab);
       }
-      renderTabs(openTabs, activeTab);
+      renderAllTabs();
       persistTabs();
       await refreshFileTree();
     },
@@ -275,13 +339,17 @@ async function main() {
         const content = await readFileMobile(oldPath);
         await writeFileMobile(newPath, content || { nodes: [], edges: [], groups: [] });
         await deleteFileMobile(oldPath);
+      } else if (isHarmony) {
+        const content = await readFileHarmony(oldPath);
+        await writeFileHarmony(newPath, content || { nodes: [], edges: [], groups: [], settings: { ...DEFAULT_SETTINGS } });
+        await deleteFileHarmony(oldPath);
       } else {
         await renameFile(oldPath, newName);
       }
       if (activeTab === oldPath) {
         openTabs = openTabs.map(t => t === oldPath ? newPath : t);
         await loadGraphData(newPath);
-        renderTabs(openTabs, activeTab);
+        renderAllTabs();
         persistTabs();
       }
       await refreshFileTree();
@@ -293,6 +361,9 @@ async function main() {
       if (capApp) {
         const files = await listFilesMobile();
         while (files.some(f => f.name === newPath)) { n++; newPath = base + ' ' + n + '.json'; }
+      } else if (isHarmony) {
+        const files = await listFilesHarmony();
+        while (files.some(f => f.name === newPath)) { n++; newPath = base + ' ' + n + '.json'; }
       } else {
         while (flatFilePaths(await listFileTree()).includes(newPath)) { n++; newPath = base + ' ' + n + '.json'; }
       }
@@ -301,8 +372,8 @@ async function main() {
       await refreshFileTree();
     },
     onNewFolder: async (_path) => {
-      // Capacitor 没有子目录概念，跳过
-      if (!capApp) {
+      // Capacitor / 鸿蒙 没有子目录概念，跳过
+      if (!capApp && !isHarmony) {
         await writeGraphFile(_path + '/.gitkeep', { nodes: [], edges: [], groups: [], settings: { ...DEFAULT_SETTINGS } });
         await deleteFile(_path + '/.gitkeep');
       }
@@ -314,6 +385,7 @@ async function main() {
       const content = await readGraphData(src);
       await writeGraphData(dstPath, content || { nodes: [], edges: [], groups: [] });
       if (capApp) { await deleteFileMobile(src); }
+      else if (isHarmony) { await deleteFileHarmony(src); }
       else { await deleteFile(src); }
       if (activeTab === src) { await loadGraphData(dstPath); }
       await refreshFileTree();
@@ -323,12 +395,19 @@ async function main() {
   });
 
   // 侧边栏玻璃效果
-  sidebar.sidebar.style.cssText = `position:absolute;left:2px;top:6px;bottom:6px;z-index:10;width:240px;min-width:180px;display:flex;flex-direction:column;font-size:0.85em;overflow:hidden;${glassCSS}`;
+  sidebar.sidebar.className = 'fg-glass';
+  sidebar.sidebar.style.cssText = `position:absolute;left:${SIDEBAR_LEFT}px;top:6px;bottom:6px;z-index:${Z_FLOATING_UI};width:${getResponsiveSidebarWidth()}px;min-width:${SIDEBAR_MIN_WIDTH}px;display:flex;flex-direction:column;font-size:${V('--fg-font-md', '0.85em')};overflow:hidden;`;
 
   const refreshFileTree = async () => {
     // Capacitor 模式：从应用数据目录列出文件
     if (capApp && fileSystemMountPath) {
       const files = await listFilesMobile();
+      sidebar.updateFileTree(files, activeTab);
+      return;
+    }
+    // 鸿蒙模式：从 localStorage 列出文件
+    if (isHarmony) {
+      const files = await listFilesHarmony();
       sidebar.updateFileTree(files, activeTab);
       return;
     }
@@ -359,6 +438,7 @@ async function main() {
 
   // ===== 图加载函数 =====
   async function loadGraphData(fileName: string) {
+    loadingOverlay.style.display = 'flex';
     activeTab = fileName;
     updateGwGh();
     // 先停掉旧模拟，防止异步间隙触发绘制
@@ -400,6 +480,7 @@ async function main() {
       fluidAppearance = s.fluidAppearance ?? false;
       glowAppearance = s.glowAppearance ?? false;
       gravityGrid = s.gravityGrid ?? false;
+      categoryLayout = s.categoryLayout ?? false;
     }
     sharedState.setFocusModeFn(() => focusMode);
     applyTheme(getTheme(graphTheme));
@@ -411,6 +492,7 @@ async function main() {
     }
     clearEd(); simManager.initSim();
     updateInfoRef.current();
+    loadingOverlay.style.display = 'none';
     setTimeout(() => draw(), 100);
   }
 
@@ -423,7 +505,7 @@ async function main() {
     activeTab = fileName;
     await loadGraphData(fileName);
     try { loadLayouts(); renderModeBar(); } catch {}
-    renderTabs(openTabs, activeTab);
+    renderAllTabs();
     persistTabs();
   }
 
@@ -434,7 +516,7 @@ async function main() {
     activeTab = fileName;
     await loadGraphData(fileName);
     try { loadLayouts(); renderModeBar(); } catch {}
-    renderTabs(openTabs, activeTab);
+    renderAllTabs();
     persistTabs();
   }
 
@@ -447,7 +529,7 @@ async function main() {
       activeTab = openTabs[openTabs.length - 1];
       await loadGraphData(activeTab);
     }
-    renderTabs(openTabs, activeTab);
+    renderAllTabs();
     persistTabs();
   }
 
@@ -464,7 +546,7 @@ async function main() {
     openTabs.push(fileName);
     activeTab = fileName;
     await loadGraphData(fileName);
-    renderTabs(openTabs, activeTab);
+    renderAllTabs();
     persistTabs();
   }
 
@@ -501,6 +583,15 @@ async function main() {
   let draggingNode: any = null, wasDragged = false;
   let linkMode = false, linkSrc: string | null = null;
   let defArrow = false;
+  let linkCursorX = 0, linkCursorY = 0;
+
+  // --- Undo/Redo ---
+  const undoManager = new UndoManager();
+  const saveUndo = () => undoManager.pushSnapshot(graph);
+  const withUndo = <T extends (...args: any[]) => any>(fn: T): ReturnType<T> => {
+    saveUndo();
+    return fn();
+  };
 
   // --- 存储辅助函数 ---
   const collectSettings = (): GraphSettings => ({
@@ -511,11 +602,17 @@ async function main() {
   });
 
   let saveTimeout: any;
+  let searchDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+  const dirtyTabs = new Set<string>();
+  let currentAnimationCancel: (() => void) | null = null; // 当前布局动画的取消函数
   const scheduleSave = () => {
     clearTimeout(saveTimeout);
+    dirtyTabs.add(activeTab);
     saveTimeout = setTimeout(async () => {
       graph.settings = collectSettings();
       await writeGraphData(activeTab, graph);
+      dirtyTabs.delete(activeTab);
+      renderAllTabs();
     }, 300);
   };
   (window as any).__triggerSave = () => scheduleSave();
@@ -524,7 +621,11 @@ async function main() {
   const saveNow = async () => {
     graph.settings = collectSettings();
     await writeGraphData(activeTab, graph);
+    dirtyTabs.delete(activeTab);
+    renderAllTabs();
   };
+
+  const renderAllTabs = () => renderTabs(openTabs, activeTab, dirtyTabs);
 
   const isFixedNode = (id: string) => { const n = graph.nodes.find(gn => gn.id === id); return n?.fixed || false; };
   const fixNode = (id: string) => {
@@ -574,18 +675,54 @@ async function main() {
     const sim = getSim();
     if (!sim) return;
     const nodes = sim.nodes() || [];
+
+    // 空状态提示
+    if (nodes.length === 0 && readyToDraw) {
+      if (!(pixi.nodeLayer as any)._emptyText) {
+        const { Text } = require('pixi.js');
+        const emptyText = new Text({
+          text: '画布为空\n右键或点击"新建节点"开始',
+          resolution: 3,
+          style: { fontSize: 16, fill: 0x888888, fontFamily: 'system-ui, sans-serif', align: 'center', lineHeight: 24 } as any,
+        });
+        emptyText.anchor.set(0.5);
+        emptyText.position.set(0, 0);
+        (pixi.nodeLayer as any)._emptyText = emptyText;
+        pixi.nodeLayer.addChild(emptyText);
+      }
+      (pixi.nodeLayer as any)._emptyText.visible = true;
+    } else if ((pixi.nodeLayer as any)._emptyText) {
+      (pixi.nodeLayer as any)._emptyText.visible = false;
+    }
     const theme = getTheme(graphTheme);
     const lblColor = parseInt(theme.labelColor.replace('#', ''), 16);
     const defColor = parseInt(theme.nodeDefaultColor.replace('#', ''), 16);
 
     // 搜索匹配集
+    const matchText = (haystack: string, needle: string): boolean => {
+      switch (sMatchMode) {
+        case 'startsWith': return haystack.toLowerCase().startsWith(needle.toLowerCase());
+        case 'endsWith': return haystack.toLowerCase().endsWith(needle.toLowerCase());
+        case 'fuzzy': {
+          let ni = 0;
+          const hl = haystack.toLowerCase(), nl = needle.toLowerCase();
+          for (let i = 0; i < hl.length && ni < nl.length; i++) {
+            if (hl[i] === nl[ni]) ni++;
+          }
+          return ni === nl.length;
+        }
+        case 'contains':
+        default: return haystack.toLowerCase().includes(needle.toLowerCase());
+      }
+    };
     const searchMatchIds = new Set<string>();
+    const showOnlyMode = sDisplayMode === 'show' && search;
     if (search) {
       for (const n of nodes) {
         let m = false;
-        if (sField === 'name') m = (n.label || '').toLowerCase().includes(search.toLowerCase());
-        else if (sField === 'tags') m = (n.tags || []).some((t: string) => t.toLowerCase().includes(search.toLowerCase()));
-        else if (sField === 'note') m = (n.note || '').toLowerCase().includes(search.toLowerCase());
+        if (sField === 'name') m = matchText(n.label || '', search);
+        else if (sField === 'tags') m = (n.tags || []).some((t: string) => matchText(t, search));
+        else if (sField === 'note') m = matchText(n.note || '', search);
         if (m) searchMatchIds.add(n.id);
       }
     }
@@ -640,9 +777,12 @@ async function main() {
         updateNodePosition(sprite, n.x, n.y);
       }
 
-      // 缩放 > 0.3 才显示标签
+      // 标签在缩放 0.3-0.45 区间淡入淡出
       sprite.radius = n.radius || 9;
-	      sprite.label.visible = pixi.viewport.scale.x > 0.4;
+	      const zoom = pixi.viewport.scale.x;
+      const labelAlpha = Math.max(0, Math.min(1, (zoom - 0.3) / 0.15));
+      sprite.label.visible = labelAlpha > 0;
+      sprite.label.alpha = labelAlpha;
 
       // 组颜色
       const tags: string[] = n.tags || [];
@@ -668,7 +808,7 @@ async function main() {
         searchMatch: searchMatchIds.has(id),
         fixed: n.fixed || false,
         collapsed: false,
-        inFocus: !focusActive || focusNeighborIds.has(id),
+        inFocus: (!focusActive || focusNeighborIds.has(id)) && (!showOnlyMode || searchMatchIds.has(id)),
         groupColor: gColor,
         groupEdgeOnly: gEdgeOnly,
         fluidMode: fluidAppearance,
@@ -688,10 +828,47 @@ async function main() {
     }
 
     // 边、集合、网格
+    const hiddenNodes = new Set<string>();
+    if (showOnlyMode) {
+      for (const n of nodes) { if (!searchMatchIds.has(n.id)) hiddenNodes.add(n.id); }
+    }
     updateEdges(pixi.edgeLayer, graph, nodes, {
-      hiddenNodes: new Set(),
+      hiddenNodes,
       focusNeighborIds: focusActive ? focusNeighborIds : undefined,
     });
+    // 连线模式：从源节点到光标的虚线
+    if (linkMode && linkSrc) {
+      const srcNode = nodes.find((n: any) => n.id === linkSrc);
+      if (srcNode && (linkCursorX !== 0 || linkCursorY !== 0)) {
+        if (!(pixi.edgeLayer as any)._linkGfx) {
+          (pixi.edgeLayer as any)._linkGfx = new Graphics();
+        }
+        const lg = (pixi.edgeLayer as any)._linkGfx as Graphics;
+        // 每帧重新加入（updateEdges 调用了 removeChildren）
+        pixi.edgeLayer.addChild(lg);
+        lg.clear();
+        const dashLen = 6, gapLen = 4;
+        const dx = linkCursorX - srcNode.x, dy = linkCursorY - srcNode.y;
+        const len = Math.sqrt(dx * dx + dy * dy);
+        if (len > 1) {
+          const ux = dx / len, uy = dy / len;
+          let drawn = 0; let on = true;
+          while (drawn < len) {
+            const seg = on ? Math.min(dashLen, len - drawn) : Math.min(gapLen, len - drawn);
+            const sx = srcNode.x + ux * drawn;
+            const sy = srcNode.y + uy * drawn;
+            drawn += seg;
+            const ex = srcNode.x + ux * drawn;
+            const ey = srcNode.y + uy * drawn;
+            if (on) lg.moveTo(sx, sy).lineTo(ex, ey);
+            on = !on;
+          }
+          lg.stroke({ color: '#5B8FF9', width: 2, alpha: 0.7 });
+        }
+      }
+    } else if ((pixi.edgeLayer as any)._linkGfx) {
+      (pixi.edgeLayer as any)._linkGfx.clear();
+    }
     // 分类布局矩形框
     if ((activeMode === 'category' || activeMode === 'fullcat') && (graph as any)._categoryBoxes) {
       const boxes = (graph as any)._categoryBoxes;
@@ -734,6 +911,16 @@ async function main() {
       nodes,
       transform: getViewportTransform(),
     });
+    const selCount = sharedState.selectedNodeIds.length;
+    const parts = [`${graph.nodes.length} 节点 | ${graph.edges.length} 连线`];
+    if (search) parts.push(`匹配: ${searchMatchIds.size}`);
+    if (selCount > 0) parts.push(`选中: ${selCount}`);
+    if (sharedState.focusMode) parts.push('聚焦');
+    if (linkMode) parts.push('连线中');
+    parts.push(`${pixi.viewport.scale.x.toFixed(1)}x`);
+    statsEl.textContent = parts.join(' | ');
+    searchStatus.style.display = (search && searchMatchIds.size === 0) ? '' : 'none';
+    if (search && searchMatchIds.size === 0) searchStatus.textContent = '无结果';
   };
 
   sharedState.directDraw = () => pixiDraw();
@@ -970,7 +1157,7 @@ async function main() {
   });
 
   const settingsPanel = createSettingsPanel(document.body, presetSetDiv, {
-    onSavePreset: (name) => {
+    onSavePreset: async (name) => {
       const vals = getAllSettingValues();
       if (name === '默认') {
         // 保存为"默认"预设 → 同时更新 presetDefaults
@@ -978,7 +1165,7 @@ async function main() {
         localStorage.setItem(PRESET_DEFAULT_KEY, JSON.stringify(vals));
       }
       const exists = settingPresets.findIndex(p => p.name === name);
-      if (exists >= 0) { if (!confirm(`覆盖 "${name}"？`)) return; settingPresets.splice(exists, 1); }
+      if (exists >= 0) { if (!await confirmAction(`覆盖 "${name}"？`)) return; settingPresets.splice(exists, 1); }
       settingPresets.push({ name, values: vals });
       saveSettingPresets();
     },
@@ -1017,12 +1204,8 @@ async function main() {
     },
     getPresets: () => settingPresets,
     onOpenFolder: async () => {
-      if (capApp) {
-        const dir = await openFolderMobile();
-        if (dir) {
-          fileSystemMountPath = dir;
-          await refreshFileTree();
-        }
+      if (capApp || isHarmony) {
+        // 文件导入由 fileImporter label 原生点击触发，此处无需操作
         return;
       }
       const ea = (window as any).electronAPI;
@@ -1038,17 +1221,28 @@ async function main() {
       const h = await openFolder();
       if (h) { await saveFolderHandle(h); fileSystemMountPath = h.name; await refreshFileTree(); }
     },
-    getFolderPath: () => fileSystemMountPath || '（未选择）',
+    getFolderPath: () => fileSystemMountPath || (isHarmony ? 'localStorage' : '（未选择）'),
+    getFileImporter: (capApp || isHarmony) ? () => fileImporterEl : undefined,
     getAutoUpdate: () => localStorage.getItem('fg-auto-update') === 'true',
     onToggleAutoUpdate: (val) => { localStorage.setItem('fg-auto-update', val ? 'true' : 'false'); },
     onCheckUpdate: async () => {
       const info = await checkUpdate();
-      if (!info) { alert('当前已是最新版本'); return; }
+      if (!info) { showToast('当前已是最新版本', 'success'); return; }
       showUpdateDialog(info, () => {
-        const ea = (window as any).electronAPI;
-        if (ea?.openExternal) { ea.openExternal(info.htmlUrl); }
-        else { window.open(info.htmlUrl, '_blank'); }
+        const asset = info.assets.find(a => a.name.endsWith('.apk'));
+        const dlUrl = asset?.downloadUrl || info.htmlUrl;
+        if (capApp) { downloadApk(dlUrl); }
+        else { window.open(dlUrl, '_blank'); }
       });
+    },
+    onDownloadInstall: () => {
+      const url = 'https://github.com/Gni233/force-graph-core/releases/latest';
+      if (capApp) { downloadReleaseApk(); }
+      else {
+        const ea = (window as any).electronAPI;
+        if (ea?.openExternal) { ea.openExternal(url); }
+        else { window.open(url, '_blank'); }
+      }
     },
   });
 
@@ -1061,7 +1255,14 @@ async function main() {
   fieldSelect.addEventListener('change', () => { sField = fieldSelect.value as any; draw(); });
   matchModeSelect.addEventListener('change', () => { sMatchMode = matchModeSelect.value as any; draw(); });
   modeSelect.addEventListener('change', () => { sDisplayMode = modeSelect.value as any; draw(); });
-  searchInput.addEventListener('input', () => { search = searchInput.value; draw(); });
+  searchInput.addEventListener('input', () => {
+    search = searchInput.value;
+    if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
+    searchDebounceTimer = setTimeout(() => {
+      searchMatchIndex = 0; lastSearchTerm = search;
+      draw();
+    }, 150);
+  });
   searchInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
       const nodes = getSim()?.nodes() || [];
@@ -1078,7 +1279,9 @@ async function main() {
       else { searchMatchIndex = (searchMatchIndex + 1) % (matching.length || 1); }
       if (matching.length > 0 && pixi) {
         const node = matching[searchMatchIndex];
-        pixi.viewport.moveCenter(node.x, node.y);
+        const cw = pixi.app.canvas.clientWidth;
+        const ch = pixi.app.canvas.clientHeight;
+        pixi.viewport.animate({ position: { x: cw / 2 - node.x * pixi.viewport.scale.x, y: ch / 2 - node.y * pixi.viewport.scale.y }, time: SEARCH_MOVE_DURATION });
         fillNode(node.id);
       }
     }
@@ -1086,20 +1289,20 @@ async function main() {
 
   // --- 操作按钮 ---
   const addBtn = document.createElement('button');
-  addBtn.textContent = '新建节点'; addBtn.style.cssText = 'font-size:0.85em;padding:2px 8px;cursor:pointer;';
+  addBtn.textContent = '新建节点'; addBtn.style.cssText = `font-size:${V('--fg-font-md', '0.85em')};padding:2px 8px;cursor:pointer;`;
   addBtn.onclick = () => {
     const center = pixi?.viewport?.center ?? { x: gw / 2, y: gh / 2 };
     const cx = center.x, cy = center.y;
     const newNode = { id: 'n_' + Date.now(), label: '新节点', radius: 12, headingLevel: 6, tags: [], color: '#5B8FF9', x: cx, y: cy };
-    graph.nodes.push(newNode); scheduleSave(); simManager.initSim(); fillNode(newNode.id);
+    saveUndo(); graph.nodes.push(newNode); scheduleSave(); simManager.initSim(); fillNode(newNode.id);
   };
-  controlsDiv.appendChild(addBtn);
+  primaryRow.appendChild(addBtn);
   const linkBtn = document.createElement('button');
-  linkBtn.textContent = '连线模式'; linkBtn.style.cssText = 'font-size:0.85em;padding:2px 8px;cursor:pointer;';
-  linkBtn.onclick = () => { linkMode = !linkMode; linkBtn.style.background = linkMode ? '#5B8FF9' : ''; linkBtn.style.color = linkMode ? '#fff' : ''; if (linkMode) linkSrc = null; };
-  controlsDiv.appendChild(linkBtn);
+  linkBtn.textContent = '连线模式'; linkBtn.style.cssText = `font-size:${V('--fg-font-md', '0.85em')};padding:2px 8px;cursor:pointer;`;
+  linkBtn.onclick = () => { linkMode = !linkMode; linkBtn.style.background = linkMode ? '#5B8FF9' : ''; linkBtn.style.color = linkMode ? '#fff' : ''; if (linkMode) { linkSrc = null; showToast('连线模式：点击源节点，再点击目标节点', 'info', 2000); } else { showToast('已退出连线模式', 'info'); } };
+  primaryRow.appendChild(linkBtn);
   const refreshBtn = document.createElement('button');
-  refreshBtn.textContent = '刷新'; refreshBtn.style.cssText = 'font-size:0.85em;padding:2px 8px;cursor:pointer;';
+  refreshBtn.textContent = '刷新'; refreshBtn.style.cssText = `font-size:${V('--fg-font-md', '0.85em')};padding:2px 8px;cursor:pointer;`;
   refreshBtn.onclick = async () => {
     if (activeMode === 'tree') { applyTreeLayout(); return; }
     if (activeMode === 'category') { applyCategoryLayout(false); return; }
@@ -1116,7 +1319,17 @@ async function main() {
     }
     simManager.initSim(); draw();
   };
-  controlsDiv.appendChild(refreshBtn);
+  primaryRow.appendChild(refreshBtn);
+  const fitBtn = document.createElement('button');
+  fitBtn.textContent = '适配'; fitBtn.title = '适应所有节点到视口 (F)';
+  fitBtn.style.cssText = `font-size:${V('--fg-font-md', '0.85em')};padding:2px 8px;cursor:pointer;`;
+  fitBtn.onclick = () => fitAllNodes();
+  primaryRow.appendChild(fitBtn);
+
+  // 分隔符
+  const sep = document.createElement('span');
+  sep.style.cssText = `width:1px;height:20px;background:${V('--fg-border-light', 'rgba(255,255,255,0.15)')};margin:0 2px;align-self:center;`;
+  primaryRow.appendChild(sep);
 
   // --- 布局切换时保存/恢复固定节点 ---
   let savedFixedNodes: { id: string; x: number; y: number; fx: number | null; fy: number | null; fixed: boolean }[] = [];
@@ -1139,7 +1352,7 @@ async function main() {
   // --- 树形布局 ---
   let treeMode = false;
   const treeBtn = document.createElement('button');
-  treeBtn.textContent = '树形'; treeBtn.style.cssText = 'font-size:0.85em;padding:2px 8px;cursor:pointer;';
+  treeBtn.textContent = '树形'; treeBtn.style.cssText = `font-size:${V('--fg-font-md', '0.85em')};padding:2px 8px;cursor:pointer;`;
   treeBtn.onclick = () => {
     if (categoryMode || fullCatMode) { saveFixedState(); }
     treeMode = !treeMode;
@@ -1159,29 +1372,20 @@ async function main() {
       for (const n of graph.nodes) { n.fixed = false; n.fx = null; n.fy = null; (n as any)._sx = n.x; (n as any)._sy = n.y; }
       for (const e of graph.edges) { delete (e as any)._conflict; }
       simManager.initSim();
-      // 动画混合：前 90 帧从旧位置插值到模拟位置
-      let backFrame = 0;
-      const backTotal = 90;
-      const animBack = () => {
-        backFrame++;
-        const t = Math.min(1, backFrame / backTotal);
-        const ease = t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
-        const simNodes = simManager.getSim()?.nodes() || [];
-        for (const n of graph.nodes) {
-          const sx = (n as any)._sx, sy = (n as any)._sy;
-          if (sx == null) continue;
-          const sn = simNodes.find((s: any) => s.id === n.id);
-          if (!sn) continue;
-          const tx = sn.x, ty = sn.y;
-          n.x = sx + (tx - sx) * ease;
-          n.y = sy + (ty - sy) * ease;
-          sn.x = n.x; sn.y = n.y;
-          if (backFrame >= backTotal) { sn.fx = null; sn.fy = null; }
-        }
-        draw();
-        if (backFrame < backTotal) requestAnimationFrame(animBack);
-      };
-      requestAnimationFrame(animBack);
+      // 动画混合：900ms 从旧位置插值到模拟位置
+      currentAnimationCancel?.();
+      currentAnimationCancel = startNodeAnimation({
+        nodes: graph.nodes,
+        simNodes: simManager.getSim()?.nodes() || [],
+        getSource: (n) => ({ x: (n as any)._sx, y: (n as any)._sy }),
+        getTarget: (n) => {
+          const sim = simManager.getSim()?.nodes() || [];
+          const sn = sim.find((s: any) => s.id === n.id);
+          return sn ? { x: sn.x, y: sn.y } : null;
+        },
+        onFrame: () => sharedState.directDraw?.(),
+        unfixSimOnComplete: true,
+      });
     }
   };
   // (treeBtn removed — now in mode bar)
@@ -1286,44 +1490,25 @@ async function main() {
     }
     // RAF 动画平滑过渡到目标树位置
     const simNodes = simManager.getSim()?.nodes() || [];
-    for (const n of graph.nodes) {
-      if ((n as any)._treeX != null) {
-        // 从模拟节点读当前位置（不在树上时可能已漂移）
-        const sn = simNodes.find((s: any) => s.id === n.id);
-        (n as any)._sx = sn ? sn.x : n.x;
-        (n as any)._sy = sn ? sn.y : n.y;
-      }
-    }
     simManager.getSim()?.stop();
-    let animFrame = 0;
-    const animTotal = 90;
-    const animateTree = () => {
-      animFrame++;
-      const t = Math.min(1, animFrame / animTotal);
-      const ease = t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
-      for (const n of graph.nodes) {
+    currentAnimationCancel?.();
+    currentAnimationCancel = startNodeAnimation({
+      nodes: graph.nodes,
+      simNodes,
+      getTarget: (n) => {
         const tx = (n as any)._treeX, ty = (n as any)._treeY;
-        if (tx == null) continue;
-        const sx = (n as any)._sx, sy = (n as any)._sy;
-        n.x = sx + (tx - sx) * ease;
-        n.y = sy + (ty - sy) * ease;
-        n.fx = n.x; n.fy = n.y;
-        if (simNodes.length) {
-          const sn = simNodes.find((s: any) => s.id === n.id);
-          if (sn) { sn.x = n.x; sn.y = n.y; sn.fx = n.x; sn.fy = n.y; }
-        }
-        if (animFrame >= animTotal) { n.fixed = true; }
-      }
-      draw();
-      if (animFrame < animTotal) requestAnimationFrame(animateTree);
-      else simManager.initSim();
-    };
-    requestAnimationFrame(animateTree);
+        if (tx == null) return null;
+        return { x: tx, y: ty };
+      },
+      onFrame: () => sharedState.directDraw?.(),
+      onComplete: () => simManager.initSim(),
+      fixOnComplete: true,
+    });
   };
 
   // --- 逆时针旋转 90°（变换节点坐标）---
   const rotBtn = document.createElement('button');
-  rotBtn.textContent = '旋转'; rotBtn.style.cssText = 'font-size:0.85em;padding:2px 8px;cursor:pointer;';
+  rotBtn.textContent = '旋转'; rotBtn.style.cssText = `font-size:${V('--fg-font-md', '0.85em')};padding:2px 8px;cursor:pointer;`;
   rotBtn.onclick = () => {
     // 所有节点绕原点 (0,0) 逆时针旋转 90°：(x,y) → (y, -x)
     for (const n of graph.nodes) {
@@ -1353,29 +1538,19 @@ async function main() {
         }
       }
       simManager.getSim()?.stop();
-      let rotFrame = 0;
-      const rotTotal = 90;
-      const animRot = () => {
-        rotFrame++;
-        const t = Math.min(1, rotFrame / rotTotal);
-        const ease = t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
-        const sns = simManager.getSim()?.nodes() || [];
-        for (const n of graph.nodes) {
+      currentAnimationCancel?.();
+      currentAnimationCancel = startNodeAnimation({
+        nodes: graph.nodes,
+        simNodes: simManager.getSim()?.nodes() || [],
+        getTarget: (n) => {
           const tx = (n as any)._treeX, ty = (n as any)._treeY;
-          if (tx == null) continue;
-          const sx = (n as any)._sx, sy = (n as any)._sy;
-          n.x = sx + (tx - sx) * ease;
-          n.y = sy + (ty - sy) * ease;
-          n.fx = n.x; n.fy = n.y;
-          const sn = sns.find((s: any) => s.id === n.id);
-          if (sn) { sn.x = n.x; sn.y = n.y; sn.fx = n.x; sn.fy = n.y; }
-          if (rotFrame >= rotTotal) { n.fixed = true; }
-        }
-        draw();
-        if (rotFrame < rotTotal) requestAnimationFrame(animRot);
-        else simManager.initSim();
-      };
-      requestAnimationFrame(animRot);
+          if (tx == null) return null;
+          return { x: tx, y: ty };
+        },
+        onFrame: () => sharedState.directDraw?.(),
+        onComplete: () => simManager.initSim(),
+        fixOnComplete: true,
+      });
     }
     else { simManager.initSim(); draw(); }
   };
@@ -1383,7 +1558,7 @@ async function main() {
 
   // 导入文件按钮
   const importBtn = document.createElement('button');
-  importBtn.textContent = '导入'; importBtn.style.cssText = 'font-size:0.85em;padding:2px 8px;cursor:pointer;';
+  importBtn.textContent = '导入'; importBtn.style.cssText = `font-size:${V('--fg-font-md', '0.85em')};padding:2px 8px;cursor:pointer;`;
   importBtn.onclick = async () => {
     // Electron 模式：原生文件对话框，直接存路径
     const ea = (window as any).electronAPI;
@@ -1427,7 +1602,7 @@ async function main() {
   // --- 分类布局 ---
   let categoryMode = false;
   const catBtn = document.createElement('button');
-  catBtn.textContent = '分类'; catBtn.style.cssText = 'font-size:0.85em;padding:2px 8px;cursor:pointer;';
+  catBtn.textContent = '分类'; catBtn.style.cssText = `font-size:${V('--fg-font-md', '0.85em')};padding:2px 8px;cursor:pointer;`;
   catBtn.onclick = () => {
     categoryMode = !categoryMode;
     catBtn.style.background = categoryMode ? '#5B8FF9' : '';
@@ -1446,26 +1621,19 @@ async function main() {
       (graph as any)._categoryBoxes = null;
       delete (graph as any)._categoryBoxes;
       simManager.initSim();
-      let backFrame = 0; const backTotal = 90;
-      const animBack = () => {
-        backFrame++;
-        const t = Math.min(1, backFrame / backTotal);
-        const ease = t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
-        const sns = simManager.getSim()?.nodes() || [];
-        for (const n of graph.nodes) {
-          const sx = (n as any)._sx, sy = (n as any)._sy;
-          if (sx == null) continue;
-          const sn = sns.find((s: any) => s.id === n.id);
-          if (!sn) continue;
-          n.x = sx + (sn.x - sx) * ease;
-          n.y = sy + (sn.y - sy) * ease;
-          sn.x = n.x; sn.y = n.y;
-          if (backFrame >= backTotal) { sn.fx = null; sn.fy = null; }
-        }
-        draw();
-        if (backFrame < backTotal) requestAnimationFrame(animBack);
-      };
-      requestAnimationFrame(animBack);
+      currentAnimationCancel?.();
+      currentAnimationCancel = startNodeAnimation({
+        nodes: graph.nodes,
+        simNodes: simManager.getSim()?.nodes() || [],
+        getSource: (n) => ({ x: (n as any)._sx, y: (n as any)._sy }),
+        getTarget: (n) => {
+          const sim = simManager.getSim()?.nodes() || [];
+          const sn = sim.find((s: any) => s.id === n.id);
+          return sn ? { x: sn.x, y: sn.y } : null;
+        },
+        onFrame: () => sharedState.directDraw?.(),
+        unfixSimOnComplete: true,
+      });
     }
   };
   // (catBtn removed — now in mode bar)
@@ -1473,7 +1641,7 @@ async function main() {
   // --- 全分类布局 ---
   let fullCatMode = false;
   const fullCatBtn = document.createElement('button');
-  fullCatBtn.textContent = '全分类'; fullCatBtn.style.cssText = 'font-size:0.85em;padding:2px 8px;cursor:pointer;';
+  fullCatBtn.textContent = '全分类'; fullCatBtn.style.cssText = `font-size:${V('--fg-font-md', '0.85em')};padding:2px 8px;cursor:pointer;`;
   let fullCatSavedModes: { id: string; mode: string }[] = [];
   fullCatBtn.onclick = () => {
     fullCatMode = !fullCatMode;
@@ -1498,25 +1666,19 @@ async function main() {
       for (const n of graph.nodes) { n.fixed = false; n.fx = null; n.fy = null; (n as any)._sx = n.x; (n as any)._sy = n.y; }
       (graph as any)._categoryBoxes = null; delete (graph as any)._categoryBoxes;
       simManager.initSim();
-      let backFrame = 0; const backTotal = 90;
-      const animBack = () => {
-        backFrame++;
-        const t = Math.min(1, backFrame / backTotal);
-        const ease = t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
-        const sns = simManager.getSim()?.nodes() || [];
-        for (const n of graph.nodes) {
-          const sx = (n as any)._sx, sy = (n as any)._sy;
-          if (sx == null) continue;
-          const sn = sns.find((s: any) => s.id === n.id);
-          if (!sn) continue;
-          n.x = sx + (sn.x - sx) * ease; n.y = sy + (sn.y - sy) * ease;
-          sn.x = n.x; sn.y = n.y;
-          if (backFrame >= backTotal) { sn.fx = null; sn.fy = null; }
-        }
-        draw();
-        if (backFrame < backTotal) requestAnimationFrame(animBack);
-      };
-      requestAnimationFrame(animBack);
+      currentAnimationCancel?.();
+      currentAnimationCancel = startNodeAnimation({
+        nodes: graph.nodes,
+        simNodes: simManager.getSim()?.nodes() || [],
+        getSource: (n) => ({ x: (n as any)._sx, y: (n as any)._sy }),
+        getTarget: (n) => {
+          const sim = simManager.getSim()?.nodes() || [];
+          const sn = sim.find((s: any) => s.id === n.id);
+          return sn ? { x: sn.x, y: sn.y } : null;
+        },
+        onFrame: () => sharedState.directDraw?.(),
+        unfixSimOnComplete: true,
+      });
     }
   };
   // (fullCatBtn removed — now in mode bar)
@@ -1620,36 +1782,20 @@ async function main() {
 
     // 缓动进入
     const simNodes = simManager.getSim()?.nodes() || [];
-    for (const n of graph.nodes) {
-      if ((n as any)._treeX != null) {
-        const sn = simNodes.find((s: any) => s.id === n.id);
-        (n as any)._sx = sn ? sn.x : n.x;
-        (n as any)._sy = sn ? sn.y : n.y;
-      }
-    }
     simManager.getSim()?.stop();
-    let animFrame = 0; const animTotal = 90;
-    const animateIn = () => {
-      animFrame++;
-      const t = Math.min(1, animFrame / animTotal);
-      const ease = t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
-      const sns = simManager.getSim()?.nodes() || [];
-      for (const n of graph.nodes) {
+    currentAnimationCancel?.();
+    currentAnimationCancel = startNodeAnimation({
+      nodes: graph.nodes,
+      simNodes,
+      getTarget: (n) => {
         const tx = (n as any)._treeX, ty = (n as any)._treeY;
-        if (tx == null) continue;
-        const sx = (n as any)._sx, sy = (n as any)._sy;
-        n.x = sx + (tx - sx) * ease;
-        n.y = sy + (ty - sy) * ease;
-        n.fx = n.x; n.fy = n.y;
-        const sn = sns.find((s: any) => s.id === n.id);
-        if (sn) { sn.x = n.x; sn.y = n.y; sn.fx = n.x; sn.fy = n.y; }
-        if (animFrame >= animTotal) { n.fixed = true; }
-      }
-      draw();
-      if (animFrame < animTotal) requestAnimationFrame(animateIn);
-      else simManager.initSim();
-    };
-    requestAnimationFrame(animateIn);
+        if (tx == null) return null;
+        return { x: tx, y: ty };
+      },
+      onFrame: () => sharedState.directDraw?.(),
+      onComplete: () => simManager.initSim(),
+      fixOnComplete: true,
+    });
   };
 
   // --- 集合搜索 ---
@@ -1664,16 +1810,17 @@ async function main() {
 
   let modeCollapsed = false;
   const modeToggle = document.createElement('span');
-  modeToggle.textContent = '布局 ▾'; modeToggle.style.cssText = 'font-size:0.8em;cursor:pointer;margin-right:4px;';
+  modeToggle.textContent = '布局 ▾'; modeToggle.style.cssText = `font-size:${V('--fg-font-sm', '0.8em')};cursor:pointer;margin-right:4px;`;
   modeToggle.onclick = () => { modeCollapsed = !modeCollapsed; modeToggle.textContent = modeCollapsed ? '布局 ▸' : '布局 ▾'; modeRow.style.display = modeCollapsed ? 'none' : ''; };
-  controlsDiv.insertBefore(modeToggle, controlsDiv.firstChild);
+  primaryRow.appendChild(modeToggle);
 
   const modeRow = document.createElement('div');
   modeRow.style.cssText = 'display:flex;gap:3px;align-items:center;flex-wrap:wrap;';
-  controlsDiv.insertBefore(modeRow, controlsDiv.firstChild?.nextSibling || null);
+  primaryRow.appendChild(modeRow);
 
   let activeMode = 'default'; // default | tree | category | fullcat | layout:xxx
   const exitLayoutMode = (toMode = 'default') => {
+    currentAnimationCancel?.();
     if (activeMode === 'tree') {
       for (const n of graph.nodes) { n.fixed = false; n.fx = null; n.fy = null; delete (n as any)._pieColors; delete (n as any)._treeX; delete (n as any)._treeY; delete (n as any)._sx; delete (n as any)._sy; }
       for (const e of graph.edges) { delete (e as any)._conflict; }
@@ -1694,6 +1841,7 @@ async function main() {
   };
 
   const applyLayoutMode = (mode: string) => {
+    currentAnimationCancel?.(); // 取消正在进行的动画
     // 只在离开默认模式时保存一次
     if (activeMode === 'default' && mode !== 'default') saveFixedState();
     // 清理当前模式
@@ -1745,8 +1893,8 @@ async function main() {
     const mkPill = (label: string, mode: string, isActive: boolean) => {
       const pill = document.createElement('span');
       pill.textContent = label;
-      pill.style.cssText = `font-size:0.75em;padding:1px 8px;cursor:pointer;border-radius:3px;white-space:nowrap;user-select:none;${
-        isActive ? 'background:rgba(91,143,249,0.35);border:1px solid rgba(91,143,249,0.5);color:#fff;' : 'border:1px solid rgba(255,255,255,0.18);'
+      pill.style.cssText = `font-size:${V('--fg-font-xs', '0.72em')};padding:1px 8px;cursor:pointer;border-radius:3px;white-space:nowrap;user-select:none;${
+        isActive ? `background:rgba(91,143,249,0.35);border:1px solid rgba(91,143,249,0.5);color:${V('--fg-text','#fff')};` : `border:1px solid ${V('--fg-border-light','rgba(255,255,255,0.18)')};`
       }`;
       pill.onclick = () => { if (!isActive) applyLayoutMode(mode); };
       return pill;
@@ -1761,16 +1909,16 @@ async function main() {
       pill.oncontextmenu = (e) => {
         e.preventDefault();
         const menu = document.createElement('div');
-        menu.style.cssText = `position:fixed;left:${e.clientX}px;top:${e.clientY}px;z-index:200;background:rgba(40,42,48,0.9);border:1px solid rgba(255,255,255,0.15);border-radius:6px;padding:4px 0;min-width:90px;font-size:0.82em;color:#ccc;`;
+        menu.style.cssText = `position:fixed;left:${e.clientX}px;top:${e.clientY}px;z-index:${Z_CONTEXT_MENU};background:${V('--fg-surface-glass','rgba(40,42,48,0.9)')};border:1px solid ${V('--fg-glass-border','rgba(255,255,255,0.15)')};border-radius:6px;padding:4px 0;min-width:90px;font-size:${V('--fg-font-sm', '0.8em')};color:${V('--fg-text','#ccc')};box-shadow:${V('--fg-shadow-md','0 4px 16px rgba(0,0,0,0.3)')};backdrop-filter:blur(10px);`;
         const mk = (t: string, fn: () => void) => {
           const mi = document.createElement('div'); mi.textContent = t;
           mi.style.cssText = 'padding:3px 8px;cursor:pointer;';
-          mi.onmouseenter = () => mi.style.background = 'rgba(255,255,255,0.12)';
+          mi.onmouseenter = () => mi.style.background = V('--fg-button-hover','rgba(255,255,255,0.12)');
           mi.onmouseleave = () => mi.style.background = '';
           mi.onclick = () => { fn(); menu.remove(); }; return mi;
         };
         menu.appendChild(mk('重命名', async () => { const nn = await safePrompt('新名称：', l.name); if (nn) { const oldActive = activeMode === l.name; l.name = nn; if (oldActive) activeMode = nn; saveLayouts(); renderModeBar(); } }));
-        menu.appendChild(mk('删除', () => { if (confirm(`删除 "${l.name}"？`)) { if (activeMode === l.name) applyLayoutMode('default'); layouts = layouts.filter(x => x !== l); saveLayouts(); renderModeBar(); } }));
+                menu.appendChild(mk('删除', async () => { if (await confirmAction(`删除 "${l.name}"？`)) { if (activeMode === l.name) applyLayoutMode('default'); layouts = layouts.filter(x => x !== l); saveLayouts(); renderModeBar(); } }));
         document.body.appendChild(menu);
         const close = () => { menu.remove(); document.removeEventListener('click', close); };
         setTimeout(() => document.addEventListener('click', close), 0);
@@ -1780,7 +1928,7 @@ async function main() {
     // + 保存按钮
     const addBtn = document.createElement('span');
     addBtn.textContent = '+'; addBtn.title = '保存为布局';
-    addBtn.style.cssText = 'font-size:0.75em;padding:1px 6px;cursor:pointer;border-radius:3px;border:1px solid rgba(255,255,255,0.18);';
+    addBtn.style.cssText = `font-size:${V('--fg-font-xs', '0.72em')};padding:1px 6px;cursor:pointer;border-radius:3px;border:1px solid ${V('--fg-border-light','rgba(255,255,255,0.18)')};`;
     addBtn.onclick = async () => {
       // 如果在自定义布局模式，直接更新当前布局
       if (activeMode !== 'default' && activeMode !== 'tree' && activeMode !== 'category' && activeMode !== 'fullcat') {
@@ -1794,7 +1942,7 @@ async function main() {
       const name = await safePrompt('布局名称：');
       if (!name) return;
       const exists = layouts.findIndex(l => l.name === name);
-      if (exists >= 0) { if (!confirm(`覆盖 "${name}"？`)) return; layouts.splice(exists, 1); }
+      if (exists >= 0) { if (!await confirmAction(`覆盖 "${name}"？`)) return; layouts.splice(exists, 1); }
       layouts.push({ name,
         nodes: graph.nodes.map(n => ({ id: n.id, x: n.x, y: n.y, fx: n.fx, fy: n.fy, fixed: n.fixed || false })),
         groupModes: graph.groups.map(g => ({ id: g.id, mode: g.displayMode })),
@@ -1808,10 +1956,10 @@ async function main() {
   // --- 集合搜索 ---
   const groupInput = document.createElement('input');
   groupInput.type = 'text'; groupInput.placeholder = '输入标签搜索/创建集合';
-  groupInput.style.cssText = 'font-size:0.85em;padding:2px 6px;border:1px solid #ccc;border-radius:4px;width:160px;';
+  groupInput.style.cssText = `font-size:${V('--fg-font-md', '0.85em')};padding:2px 6px;border:1px solid ${V('--fg-input-border','#ccc')};border-radius:4px;width:160px;`;
   controlsDiv.appendChild(groupInput);
   const groupDropdown = document.createElement('div');
-  groupDropdown.style.cssText = 'position:absolute;z-index:50;background:var(--fg-bg,#fff);border:1px solid var(--fg-border,#d0d0d0);border-radius:4px;max-height:150px;overflow-y:auto;display:none;font-size:0.85em;min-width:160px;';
+  groupDropdown.style.cssText = `position:absolute;z-index:${Z_DROPDOWN};background:${V('--fg-surface','#fff')};border:1px solid ${V('--fg-border','#d0d0d0')};border-radius:4px;max-height:150px;overflow-y:auto;display:none;font-size:${V('--fg-font-md', '0.85em')};min-width:160px;`;
   groupInput.parentElement!.style.position = 'relative';
   groupInput.parentElement!.appendChild(groupDropdown);
   groupInput.addEventListener('input', () => {
@@ -1827,16 +1975,17 @@ async function main() {
         dot.style.cssText = `display:inline-block;width:10px;height:10px;border-radius:50%;background:${g.color};flex-shrink:0;`;
         item.appendChild(dot); item.appendChild(document.createTextNode(g.label));
         item.onmousedown = (ev) => { ev.preventDefault(); fillGroup(g.id); groupDropdown.style.display = 'none'; };
-        item.onmouseenter = () => item.style.background = 'var(--fg-hover,#e8e8e8)';
+        item.onmouseenter = () => item.style.background = V('--fg-button-hover','#e8e8e8');
         item.onmouseleave = () => item.style.background = '';
         groupDropdown.appendChild(item);
       });
     }
     const createItem = document.createElement('div');
-    createItem.style.cssText = 'padding:4px 8px;cursor:pointer;color:#5B8FF9;font-style:italic;border-top:1px solid #eee;';
+    createItem.style.cssText = `padding:4px 8px;cursor:pointer;color:#5B8FF9;font-style:italic;border-top:1px solid ${V('--fg-border-light','#eee')};`;
     createItem.textContent = `+ 创建集合 "${q}"`;
     createItem.onmousedown = (ev) => {
       ev.preventDefault();
+      saveUndo();
       const newGroup = { id: 'g_' + Date.now(), label: q, color: '#5B8FF9', borderColor: '#3A6FD8', opacity: 0.15, displayMode: 'rect' as any, nodeColorMode: 'off' as any };
       graph.groups.push(newGroup); scheduleSave(); draw(); fillGroup(newGroup.id);
       groupDropdown.style.display = 'none';
@@ -1859,12 +2008,35 @@ async function main() {
         action: () => {
           const center = pixi?.viewport?.center ?? { x: gw / 2, y: gh / 2 };
           const cx = center.x, cy = center.y;
-          graph.nodes.push({ id: 'n_' + Date.now(), label: '新节点', radius: 12, headingLevel: 6, tags: [], color: '#5B8FF9', x: cx, y: cy });
+          saveUndo(); graph.nodes.push({ id: 'n_' + Date.now(), label: '新节点', radius: 12, headingLevel: 6, tags: [], color: '#5B8FF9', x: cx, y: cy });
           scheduleSave(); simManager.initSim();
         },
       });
     } else if (type === 'node' && id) {
       items.push({ label: '编辑', action: () => { fillNode(id); } });
+      // 选择邻居
+      items.push({ label: '选择邻居', action: () => {
+        const neighborIds = new Set<string>();
+        graph.edges.forEach(e => {
+          const src = typeof e.source === 'object' ? e.source.id : e.source;
+          const tgt = typeof e.target === 'object' ? e.target.id : e.target;
+          if (src === id) neighborIds.add(tgt);
+          if (tgt === id) neighborIds.add(src);
+        });
+        neighborIds.add(id); // 包含当前节点
+        sharedState.setSelectedNodeIds?.([...neighborIds]);
+      }});
+      // 复制节点
+      items.push({ label: '复制节点', action: () => {
+        const orig = graph.nodes.find(n => n.id === id);
+        if (!orig) return;
+        const newId = 'n_' + Date.now();
+        const copy = JSON.parse(JSON.stringify(orig));
+        copy.id = newId; copy.x = (orig.x || 0) + 60; copy.y = (orig.y || 0) + 40;
+        delete copy.fx; delete copy.fy; delete copy.fixed;
+        saveUndo(); graph.nodes.push(copy);
+        scheduleSave(); simManager.initSim(); draw(); fillNode(newId);
+      }});
       const node = graph.nodes.find(n => n.id === id);
       if (node?.mediaType && isExpanded(id)) {
         items.push({ label: '收起', action: () => { hideMedia(id); draw(); } });
@@ -1899,14 +2071,14 @@ async function main() {
       } else {
         items.push({ label: '固定', action: () => { fixNode(id); } });
       }
-      items.push({ label: '新建子节点', action: () => { const parent = graph.nodes.find(n => n.id === id); const childId = 'n_' + Date.now(); graph.nodes.push({ id: childId, label: '子节点', radius: 10, headingLevel: Math.min(6, (parent?.headingLevel || 1) + 1), tags: [...(parent?.tags || [])], color: '#5AD8A6', x: (parent?.x || 200) + 60, y: (parent?.y || 200) + 40 }); graph.edges.push({ source: id, target: childId, label: '', color: '#BFBFBF', arrow: defArrow }); scheduleSave(); simManager.initSim(); } });
+      items.push({ label: '新建子节点', action: () => { const parent = graph.nodes.find(n => n.id === id); const childId = 'n_' + Date.now(); saveUndo(); graph.nodes.push({ id: childId, label: '子节点', radius: 10, headingLevel: Math.min(6, (parent?.headingLevel || 1) + 1), tags: [...(parent?.tags || [])], color: '#5AD8A6', x: (parent?.x || 200) + 60, y: (parent?.y || 200) + 40 }); graph.edges.push({ source: id, target: childId, label: '', color: '#BFBFBF', arrow: defArrow }); scheduleSave(); simManager.initSim(); } });
       items.push({ label: '连线', action: () => { linkMode = true; linkSrc = id; } });
-      items.push({ label: '删除', action: () => { graph.nodes = graph.nodes.filter(n => n.id !== id); graph.edges = graph.edges.filter(e => e.source !== id && e.target !== id); if (selNode === id) clearEd(); scheduleSave(); simManager.initSim(); } });
+      items.push({ label: '删除', action: () => { saveUndo(); graph.nodes = graph.nodes.filter(n => n.id !== id); graph.edges = graph.edges.filter(e => e.source !== id && e.target !== id); if (selNode === id) clearEd(); scheduleSave(); simManager.initSim(); } });
     } else if (type === 'edge' && id !== null) {
       const idx = parseInt(id);
       items.push({ label: '编辑', action: () => { fillEdge(idx); } });
-      items.push({ label: '交换方向', action: () => { const e = graph.edges[idx]; if (e) { [e.source, e.target] = [e.target, e.source]; scheduleSave(); simManager.initSim(); } } });
-      items.push({ label: '删除', action: () => { graph.edges.splice(idx, 1); if (selEdge === idx) clearEd(); scheduleSave(); simManager.initSim(); } });
+      items.push({ label: '交换方向', action: () => { const e = graph.edges[idx]; if (e) { saveUndo(); [e.source, e.target] = [e.target, e.source]; scheduleSave(); simManager.initSim(); } } });
+      items.push({ label: '删除', action: () => { saveUndo(); graph.edges.splice(idx, 1); if (selEdge === idx) clearEd(); scheduleSave(); simManager.initSim(); } });
     } else if (type === 'group' && id) {
       items.push({ label: '编辑', action: () => { fillGroup(id); } });
     }
@@ -1920,7 +2092,7 @@ async function main() {
     if (n) {
       if (linkSrc === n.id) { linkMode = false; linkSrc = null; return true; }
       if (graph.edges.some(e => e.source === linkSrc && e.target === n.id)) { linkMode = false; linkSrc = null; return true; }
-      graph.edges.push({ source: linkSrc, target: n.id, label: '', color: '#BFBFBF', arrow: defArrow });
+      saveUndo(); graph.edges.push({ source: linkSrc, target: n.id, label: '', color: '#BFBFBF', arrow: defArrow });
       scheduleSave(); simManager.initSim();
     }
     linkMode = false; linkSrc = null; return true;
@@ -1946,7 +2118,7 @@ async function main() {
     else if (/\.(mp3|wav|ogg|flac|aac|m4a)$/i.test(file.name)) mediaType = 'audio';
     else if (/\.(mp4|webm|mov|avi|mkv)$/i.test(file.name)) mediaType = 'video';
     const url = URL.createObjectURL(file);
-    graph.nodes.push({ id, label: file.name, radius: 12, headingLevel: 4, tags: [], color: '#5B8FF9', x: wp.x, y: wp.y, mediaType, mediaUrl: url });
+    saveUndo(); graph.nodes.push({ id, label: file.name, radius: 12, headingLevel: 4, tags: [], color: '#5B8FF9', x: wp.x, y: wp.y, mediaType, mediaUrl: url });
     scheduleSave(); simManager.initSim(); draw();
   });
 
@@ -1981,6 +2153,9 @@ async function main() {
     getWasDragged: () => wasDragged, setWasDragged: v => { wasDragged = v; },
     draw, onContextMenu, fixNode, isFixedNode, selectionBox, fixNodes, unfixNodes, appShell, triggerSave: () => scheduleSave(),
     onDragStart: (id: string) => simManager.setDragNode(id), onDragEnd: () => simManager.setDragNode(null),
+    getLinkMode: () => linkMode, getLinkSrc: () => linkSrc,
+    onLinkCursorMove: (x: number, y: number) => { linkCursorX = x; linkCursorY = y; if (sharedState.directDraw) sharedState.directDraw(); else draw(); },
+    initSim: () => simManager.initSim(), clearEd, fillNode,
     onTap: (x: number, y: number) => {
       if (handleLinkTap(x, y)) return;
       const nodes = getSim()?.nodes() || [];
@@ -2003,8 +2178,10 @@ async function main() {
     },
   });
 
-  // 开发阶段：强制清除旧 demo 数据，确保看到最新 DEMO_DATA
-  localStorage.removeItem('fg-data-demo');
+  // 启动时强制重建 demo 数据（仅当 demo 标签未开启时，保留用户修改）
+  if (!restoreTabs()?.tabs?.includes('demo')) {
+    localStorage.removeItem('fg-data-demo');
+  }
 
   // 恢复上次打开的标签页（保证 demo 始终存在）
   const restored = restoreTabs();
@@ -2016,12 +2193,15 @@ async function main() {
     openTabs = ['demo'];
     activeTab = 'demo';
   }
-  renderTabs(openTabs, activeTab);
+  renderAllTabs();
 
   // 尝试恢复文件夹
   // Capacitor 模式：始终尝试恢复应用数据目录
   if (capApp) {
     fileSystemMountPath = 'graphs';
+    await refreshFileTree();
+  } else if (isHarmony) {
+    // 鸿蒙模式：无物理文件夹，从 localStorage 列出文件
     await refreshFileTree();
   } else {
     // Electron 模式：从 userData/config.json 读路径
@@ -2054,6 +2234,129 @@ async function main() {
   updateGwGh();
   readyToDraw = true;
 
+  // ===== 键盘快捷键 =====
+  document.addEventListener('keydown', (e: KeyboardEvent) => {
+    // 输入控件中不处理快捷键
+    const tag = (e.target as HTMLElement)?.tagName;
+    const isInput = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || (e.target as HTMLElement)?.isContentEditable;
+    if (isInput) return;
+
+    const ctrl = e.ctrlKey || e.metaKey;
+
+    if (e.key === 'Delete' || e.key === 'Backspace') {
+      e.preventDefault();
+      if (selNode) {
+        const node = graph.nodes.find(n => n.id === selNode);
+        const label = node?.label || selNode;
+        confirmAction(`确定删除节点 "${label}"？`).then(ok => {
+          if (!ok) return;
+          saveUndo(); graph.nodes = graph.nodes.filter(n => n.id !== selNode);
+          graph.edges = graph.edges.filter(edge => edge.source !== selNode && edge.target !== selNode);
+          clearEd(); scheduleSave(); simManager.initSim();
+          showToast('节点已删除', 'info');
+        });
+      } else if (selEdge !== null) {
+        const edgeIdx = selEdge;
+        confirmAction('确定删除此连线？').then(ok => {
+          if (!ok) return;
+          saveUndo(); graph.edges.splice(edgeIdx, 1);
+          clearEd(); scheduleSave(); simManager.initSim();
+          showToast('连线已删除', 'info');
+        });
+      } else if (selGroup) {
+        confirmAction('确定删除此集合？').then(ok => {
+          if (!ok) return;
+          saveUndo(); graph.groups = graph.groups.filter(g => g.id !== selGroup);
+          clearEd(); scheduleSave(); draw();
+          showToast('集合已删除', 'info');
+        });
+      }
+    } else if (ctrl && e.key === 'z') {
+      e.preventDefault();
+      if (undoManager.undo(graph)) { clearEd(); simManager.initSim(); draw(); showToast('已撤销', 'info'); }
+    } else if (ctrl && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) {
+      e.preventDefault();
+      if (undoManager.redo(graph)) { clearEd(); simManager.initSim(); draw(); showToast('已重做', 'info'); }
+    } else if (ctrl && e.key === 's') {
+      e.preventDefault(); saveNow(); showToast('已保存', 'success');
+    } else if (e.key === 'f' && !ctrl) {
+      e.preventDefault();
+      const nodes = getSim()?.nodes();
+      if (nodes && nodes.length > 0 && pixi) {
+        fitAllNodes();
+      }
+    } else if (ctrl && e.key === 'n') {
+      e.preventDefault();
+      addBtn.click();
+    } else if (ctrl && e.key === 'd') {
+      e.preventDefault();
+      if (selNode) {
+        const orig = graph.nodes.find(n => n.id === selNode);
+        if (orig) {
+          const newId = 'n_' + Date.now();
+          const copy = JSON.parse(JSON.stringify(orig));
+          copy.id = newId; copy.x = (orig.x || 0) + 60; copy.y = (orig.y || 0) + 40;
+          delete copy.fx; delete copy.fy; delete copy.fixed;
+          saveUndo(); graph.nodes.push(copy);
+          scheduleSave(); simManager.initSim(); draw(); fillNode(newId);
+          showToast('节点已复制', 'success');
+        }
+      }
+    } else if (e.key === 'Escape') {
+      if (linkMode) { linkMode = false; linkSrc = null; linkBtn.style.background = ''; linkBtn.style.color = ''; showToast('已退出连线模式', 'info'); }
+      else if (selNode || selEdge !== null || selGroup) { clearEd(); }
+    }
+  });
+
+  // fitAllNodes 辅助函数
+  const fitAllNodes = () => {
+    const nodes = getSim()?.nodes();
+    if (!nodes || nodes.length === 0 || !pixi) return;
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const n of nodes) {
+      minX = Math.min(minX, n.x); minY = Math.min(minY, n.y);
+      maxX = Math.max(maxX, n.x); maxY = Math.max(maxY, n.y);
+    }
+    const pad = 60;
+    const w = maxX - minX + pad * 2;
+    const h = maxY - minY + pad * 2;
+    const canvasW = pixi!.app.canvas.clientWidth;
+    const canvasH = pixi!.app.canvas.clientHeight;
+    const scale = Math.min(canvasW / Math.max(w, 1), canvasH / Math.max(h, 1), 2);
+    const targetX = canvasW / 2 - (minX + maxX) / 2 * scale;
+    const targetY = canvasH / 2 - (minY + maxY) / 2 * scale;
+    pixi!.viewport.animate({ scale, position: { x: targetX, y: targetY }, time: FIT_ALL_DURATION });
+  };
+
+  // 侧边栏折叠动画同步
+  window.addEventListener('sidebar-toggle', ((e: CustomEvent) => {
+    const collapsed = e.detail?.collapsed;
+    const newLeft = collapsed ? `${sidebarCollapsedLeft()}px` : `${sidebarExpandedLeft()}px`;
+    floatingTop.style.left = newLeft;
+    settingsDet.style.left = newLeft;
+  }) as EventListener);
+
+  // 响应式窗口大小调整（移动端横竖屏切换）
+  let resizeDebounceTimer: ReturnType<typeof setTimeout>;
+  window.addEventListener('resize', () => {
+    clearTimeout(resizeDebounceTimer);
+    resizeDebounceTimer = setTimeout(() => {
+      const newWidth = getResponsiveSidebarWidth();
+      // 仅在展开状态下更新侧边栏宽度
+      if (sidebar.sidebar.style.width !== `${SIDEBAR_COLLAPSED_WIDTH}px`) {
+        sidebar.sidebar.style.width = `${newWidth}px`;
+        const newLeft = `${sidebarExpandedLeft()}px`;
+        floatingTop.style.left = newLeft;
+        settingsDet.style.left = newLeft;
+      }
+      // 更新 viewport 尺寸
+      if (pixi) {
+        pixi.viewport.resize(pixi.app.canvas.clientWidth, pixi.app.canvas.clientHeight);
+      }
+      draw();
+    }, 200);
+  });
+
   // 模拟启动后可能短暂抖动，延迟一帧重新居中
   requestAnimationFrame(() => {
     const vp = pixi!.viewport;
@@ -2075,6 +2378,15 @@ async function main() {
       else { window.open(info.htmlUrl, '_blank'); }
     });
   }, 3000);
+
+  // 页面关闭前强制同步保存当前图数据（防止 300ms 防抖期间的修改丢失）
+  window.addEventListener('beforeunload', () => {
+    if (graph && graph.nodes.length > 0) {
+      graph.settings = collectSettings();
+      const key = 'fg-data-' + activeTab;
+      try { localStorage.setItem(key, JSON.stringify(graph, null, 2)); } catch {}
+    }
+  });
 }
 
 main().catch(console.error);

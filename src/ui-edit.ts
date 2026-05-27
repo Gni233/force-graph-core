@@ -1,6 +1,8 @@
 import { darken, PRESET_COLORS } from "./utils/color";
 import { GraphData } from "./data/storage";
 import { safePrompt } from './dialog';
+import { confirmAction } from './toast';
+import { Z_EDIT_PANEL } from './layout-constants';
 
 export interface EditPanelContext {
   graph: GraphData;
@@ -18,10 +20,7 @@ export interface EditPanelContext {
   getSimulation: () => any;
 }
 
-const UI_BG = "#f2f2f2";
-const UI_BORDER = "#d0d0d0";
-const UI_MUTED = "#888888";
-const UI_RED = "#e03030";
+const V = (name: string, fallback: string) => `var(${name},${fallback})`;
 
 function el(tag: string, opts?: { text?: string; style?: string; type?: string; placeholder?: string; attrs?: Record<string, string> }): HTMLElement {
   const e = document.createElement(tag);
@@ -42,7 +41,7 @@ export function createEditPanel(
   const { graph, getSelNode, setSelNode, getSelEdge, setSelEdge, getSelGroup, setSelGroup,
     getLinkMode, setLinkMode, setLinkSrc, getSaveData, getInitSim, getUpdateInfo, getUpdateSelects, draw, triggerSave, getSimulation } = ctx;
 
-  const editPanel = el("div", { style: `position:absolute;right:10px;top:52px;z-index:15;min-width:220px;max-width:500px;max-height:calc(100vh - 60px);overflow-y:auto;padding:10px;border:1px solid rgba(255,255,255,0.1);border-radius:8px;background:rgba(40,42,48,0.75);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);color:#d0d0d0;display:none;flex-direction:column;gap:8px;box-shadow:0 4px 16px rgba(0,0,0,0.3);` });
+  const editPanel = el("div", { style: `position:absolute;right:10px;top:52px;z-index:${Z_EDIT_PANEL};min-width:220px;max-width:500px;max-height:calc(100vh - 60px);overflow-y:auto;padding:10px;border:1px solid ${V('--fg-glass-border','rgba(255,255,255,0.1)')};border-radius:${V('--fg-radius-md','8px')};background:${V('--fg-surface-glass','rgba(40,42,48,0.75)')};backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);color:${V('--fg-text','#d0d0d0')};display:none;flex-direction:column;gap:8px;box-shadow:${V('--fg-shadow-md','0 4px 16px rgba(0,0,0,0.3)')};transition:background var(--fg-transition,0.25s ease),color var(--fg-transition,0.25s ease);` });
   editPanel.style.opacity = String(getEditPanelOpacity());
   const showPanel = () => { editPanel.style.display = 'flex'; };
 
@@ -52,13 +51,14 @@ export function createEditPanel(
   titleBar.appendChild(dragDot);
   editPanel.insertBefore(titleBar, editPanel.firstChild);
 
-  // --- 缩放把手（左下角斜线）---
-  const resizeHandle = el("div", { style: "position:absolute;left:6px;bottom:6px;width:5px;height:5px;border-radius:50%;background:rgba(255,255,255,0.3);cursor:nesw-resize;z-index:1;" });
+  // --- 缩放把手（右下角）---
+  const resizeHandle = el("div", { style: "position:absolute;right:6px;bottom:6px;width:12px;height:12px;border-radius:50%;background:rgba(255,255,255,0.3);cursor:nwse-resize;z-index:1;touch-action:none;user-select:none;" });
   editPanel.appendChild(resizeHandle);
 
-  // --- 拖动 + 缩放状态 ---
+  // --- 拖动 + 缩放状态（鸿蒙兼容，不用 setPointerCapture）---
   let dragInfo: { sx: number; sy: number; px: number; py: number } | null = null;
   let resizeInfo: { sx: number; sy: number; pw: number; ph: number; pt: number; pl: number } | null = null;
+  let savedTransition = ''; // 保存拖拽前的 transition 值
 
   // 切换到 left-based 定位
   const ensureLeftBased = () => {
@@ -68,22 +68,37 @@ export function createEditPanel(
     editPanel.style.right = 'auto';
   };
 
+  const startDrag = (cx: number, cy: number) => {
+    ensureLeftBased();
+    savedTransition = editPanel.style.transition;
+    editPanel.style.transition = 'none';
+    dragInfo = { sx: cx, sy: cy, px: parseInt(editPanel.style.left), py: parseInt(editPanel.style.top) };
+  };
+  const startResize = (cx: number, cy: number) => {
+    ensureLeftBased();
+    savedTransition = editPanel.style.transition;
+    editPanel.style.transition = 'none';
+    const r = editPanel.getBoundingClientRect();
+    resizeInfo = { sx: cx, sy: cy, pw: r.width, ph: r.height, pt: r.top, pl: r.left };
+  };
+
   titleBar.addEventListener("pointerdown", (e: PointerEvent) => {
     e.preventDefault(); e.stopPropagation();
-    titleBar.setPointerCapture(e.pointerId);
-    ensureLeftBased();
-    editPanel.style.transition = 'none';
-    dragInfo = { sx: e.clientX, sy: e.clientY, px: parseInt(editPanel.style.left), py: parseInt(editPanel.style.top) };
+    startDrag(e.clientX, e.clientY);
   });
+  titleBar.addEventListener("touchstart", (e: TouchEvent) => {
+    e.preventDefault(); e.stopPropagation();
+    if (e.touches[0]) startDrag(e.touches[0].clientX, e.touches[0].clientY);
+  }, { passive: false });
 
   resizeHandle.addEventListener("pointerdown", (e: PointerEvent) => {
     e.preventDefault(); e.stopPropagation();
-    resizeHandle.setPointerCapture(e.pointerId);
-    ensureLeftBased();
-    editPanel.style.transition = 'none';
-    const r = editPanel.getBoundingClientRect();
-    resizeInfo = { sx: e.clientX, sy: e.clientY, pw: r.width, ph: r.height, pt: r.top, pl: r.left };
+    startResize(e.clientX, e.clientY);
   });
+  resizeHandle.addEventListener("touchstart", (e: TouchEvent) => {
+    e.preventDefault(); e.stopPropagation();
+    if (e.touches[0]) startResize(e.touches[0].clientX, e.touches[0].clientY);
+  }, { passive: false });
 
   // --- 位置持久化 ---
   const POS_KEY = 'fg-edit-panel-pos';
@@ -115,20 +130,19 @@ export function createEditPanel(
       editPanel.style.top = Math.max(0, Math.min(window.innerHeight - 60, dragInfo.py + dy)) + 'px';
     }
     if (resizeInfo) {
-      // 左下角拉伸：拖左→变宽，拖右→变窄；右边缘锁定
-      const dx = resizeInfo.sx - e.clientX;  // 正=变宽
+      // 右下角拉伸：拖右→变宽，拖左→变窄；左边缘锁定
+      const dx = e.clientX - resizeInfo.sx;  // 正=变宽
       const dy = e.clientY - resizeInfo.sy;  // 正=变高
       const newW = Math.max(220, Math.min(500, resizeInfo.pw + dx));
       const newH = Math.max(120, Math.min(window.innerHeight - resizeInfo.pt - 20, resizeInfo.ph + dy));
       editPanel.style.width = newW + 'px';
       editPanel.style.height = newH + 'px';
       editPanel.style.maxWidth = '500px';
-      editPanel.style.left = (resizeInfo.pl + resizeInfo.pw - newW) + 'px';
     }
   };
   const onGlobalUp = () => {
     if (dragInfo || resizeInfo) {
-      editPanel.style.transition = '';
+      editPanel.style.transition = savedTransition || 'background var(--fg-transition,0.25s ease),color var(--fg-transition,0.25s ease)';
       savePanelPos();
     }
     dragInfo = null; resizeInfo = null;
@@ -136,9 +150,33 @@ export function createEditPanel(
   window.addEventListener("pointermove", onGlobalMove);
   window.addEventListener("pointerup", onGlobalUp);
 
+  const onTouchMove = (e: TouchEvent) => {
+    if (!dragInfo && !resizeInfo) return;
+    e.preventDefault();
+    const pt = e.touches[0];
+    if (!pt) return;
+    if (dragInfo) {
+      const dx = pt.clientX - dragInfo.sx, dy = pt.clientY - dragInfo.sy;
+      editPanel.style.left = Math.max(0, Math.min(window.innerWidth - 40, dragInfo.px + dx)) + 'px';
+      editPanel.style.top = Math.max(0, Math.min(window.innerHeight - 60, dragInfo.py + dy)) + 'px';
+    }
+    if (resizeInfo) {
+      const dx = pt.clientX - resizeInfo.sx;
+      const dy = pt.clientY - resizeInfo.sy;
+      const newW = Math.max(220, Math.min(500, resizeInfo.pw + dx));
+      const newH = Math.max(120, Math.min(window.innerHeight - resizeInfo.pt - 20, resizeInfo.ph + dy));
+      editPanel.style.width = newW + 'px';
+      editPanel.style.height = newH + 'px';
+      editPanel.style.maxWidth = '500px';
+    }
+  };
+  window.addEventListener("touchmove", onTouchMove, { passive: false });
+  window.addEventListener("touchend", onGlobalUp);
+  window.addEventListener("touchcancel", onGlobalUp);
+
   const makeRow = (p: HTMLElement, lb: string, inp: HTMLElement) => {
     const r = el("div", { style: "display:flex;gap:6px;align-items:flex-start;" });
-    r.appendChild(el("span", { text: lb, style: "flex-shrink:0;font-size:0.9em;line-height:1.8;" }));
+    r.appendChild(el("span", { text: lb, style: "flex-shrink:0;font-size:${V('--fg-font-lg', '0.92em')};line-height:1.8;" }));
     r.appendChild(inp);
     p.appendChild(r);
   };
@@ -221,7 +259,7 @@ export function createEditPanel(
   // --- 节点编辑区 ---
   const nodeEdit = el("div");
   nodeEdit.appendChild(el("div", { text: "节点", style: "font-weight:bold;margin-bottom:4px;" }));
-  const nIdSpan = el("span", { style: `font-size:0.9em;color:${UI_MUTED};` });
+  const nIdSpan = el("span", { style: `font-size:${V('--fg-font-lg', '0.92em')};color:${V('--fg-text-muted','#888888')};` });
   nodeEdit.appendChild(nIdSpan);
   const nName = el("input", { type: "text", style: "width:100%;" }) as HTMLInputElement;
   makeRow(nodeEdit, '名称', nName);
@@ -231,7 +269,7 @@ export function createEditPanel(
   const nTagsPills: HTMLElement[] = [];
   const refreshTagPills = () => {
     nTagsPills.length = 0;
-    nTagsContainer.innerHTML = '<span style="font-size:0.85em;opacity:0.6;margin-right:4px;">标签</span>';
+    nTagsContainer.innerHTML = '<span style="font-size:' + V('--fg-font-md', '0.85em') + ';opacity:0.6;margin-right:4px;">标签</span>';
     const currentTags: string[] = [];
     for (const p of nTagsPills) { const t = (p as any)._tag; if (t) currentTags.push(t); }
     // 从已保存的 node 中读取
@@ -239,7 +277,7 @@ export function createEditPanel(
     const n = selNode ? graph.nodes.find(n => n.id === selNode) : null;
     const tags: string[] = n ? (n.tags || []) : currentTags;
     for (const t of tags) {
-      const pill = el("span", { text: t, style: "font-size:0.7em;padding:1px 6px;border-radius:3px;border:1px solid rgba(255,255,255,0.2);white-space:nowrap;display:inline-flex;align-items:center;gap:3px;cursor:pointer;" });
+      const pill = el("span", { text: t, style: "font-size:${V('--fg-font-xs', '0.72em')};padding:1px 6px;border-radius:3px;border:1px solid rgba(255,255,255,0.2);white-space:nowrap;display:inline-flex;align-items:center;gap:3px;cursor:pointer;" });
       pill.title = '点击编辑集合';
       pill.onclick = () => {
         const g = graph.groups.find(g => g.label === t);
@@ -259,7 +297,7 @@ export function createEditPanel(
       nTagsPills.push(pill);
     }
     // + 按钮
-    const addTagBtn = el("span", { text: '+', style: "font-size:0.7em;padding:0 4px;cursor:pointer;border-radius:3px;border:1px solid rgba(255,255,255,0.15);" });
+    const addTagBtn = el("span", { text: '+', style: "font-size:${V('--fg-font-xs', '0.72em')};padding:0 4px;cursor:pointer;border-radius:3px;border:1px solid rgba(255,255,255,0.15);" });
     addTagBtn.onclick = async () => {
       const tn = await safePrompt('输入标签名：');
       if (!tn) return;
@@ -270,7 +308,7 @@ export function createEditPanel(
     nTagsContainer.appendChild(addTagBtn);
   };
   nodeEdit.appendChild(nTagsContainer);
-  const nNote = el("textarea", { attrs: { rows: "2" }, style: "width:100%;resize:vertical;font-size:0.85em;" }) as HTMLTextAreaElement;
+  const nNote = el("textarea", { attrs: { rows: "2" }, style: "width:100%;resize:vertical;font-size:${V('--fg-font-md', '0.85em')};" }) as HTMLTextAreaElement;
   makeRow(nodeEdit, '内容', nNote);
   bindAutoSave(nNote);
   // 媒体类型
@@ -279,9 +317,9 @@ export function createEditPanel(
   nMediaType.addEventListener('change', saveCurrent);
   const nMediaRow = el("div", { style: "display:flex;gap:4px;align-items:center;margin-top:2px;" });
   // 导入按钮（放在最前面）
-  const nFileBtn = el("button", { text: '+', style: "font-size:0.85em;padding:1px 5px;cursor:pointer;border-radius:3px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.08);color:#ccc;" }) as HTMLButtonElement;
+  const nFileBtn = el("button", { text: '+', style: "font-size:${V('--fg-font-md', '0.85em')};padding:1px 5px;cursor:pointer;border-radius:3px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.08);color:#ccc;" }) as HTMLButtonElement;
   nFileBtn.title = '导入本地文件';
-  nMediaRow.appendChild(el("span", { text: '媒体:', style: "flex-shrink:0;font-size:0.85em;" }));
+  nMediaRow.appendChild(el("span", { text: '媒体:', style: "flex-shrink:0;font-size:${V('--fg-font-md', '0.85em')};" }));
   nMediaRow.appendChild(nMediaType);
   nFileBtn.onclick = async () => {
     const inp = document.createElement('input'); inp.type = 'file';
@@ -297,7 +335,7 @@ export function createEditPanel(
     inp.click();
   };
   nMediaRow.appendChild(nFileBtn);
-  const nMediaUrl = el("input", { type: "text", style: "width:100px;font-size:0.8em;", placeholder: "URL" }) as HTMLInputElement;
+  const nMediaUrl = el("input", { type: "text", style: "flex:1;font-size:${V('--fg-font-sm', '0.8em')};", placeholder: "URL" }) as HTMLInputElement;
   bindAutoSave(nMediaUrl);
   nMediaUrl.addEventListener('input', () => {
     const v = nMediaUrl.value;
@@ -318,7 +356,7 @@ export function createEditPanel(
   nMediaRow.appendChild(nMediaUrl);
   nodeEdit.appendChild(nMediaRow);
   const nColR = el("div", { style: "display:flex;gap:6px;align-items:center;margin:4px 0;" });
-  nColR.appendChild(el("span", { text: '颜色:', style: "flex-shrink:0;font-size:0.9em;" }));
+  nColR.appendChild(el("span", { text: '颜色:', style: "flex-shrink:0;font-size:${V('--fg-font-lg', '0.92em')};" }));
   const nCol = el("input", { type: "color", style: "width:24px;height:24px;padding:0;border:none;" }) as HTMLInputElement;
   nColR.appendChild(nCol);
   bindAutoSave(nCol);
@@ -327,23 +365,23 @@ export function createEditPanel(
 
   // 半径模式
   const radModeRow = el("div", { style: "display:flex;gap:4px;align-items:center;margin-top:4px;" });
-  radModeRow.appendChild(el("span", { text: '半径模式:', style: "font-size:0.9em;" }));
+  radModeRow.appendChild(el("span", { text: '半径模式:', style: "font-size:${V('--fg-font-lg', '0.92em')};" }));
   const radModeSelect = el("select", { style: "width:70px;" }) as HTMLSelectElement;
   radModeSelect.appendChild(el("option", { text: '按级', attrs: { value: "level" } }));
   radModeSelect.appendChild(el("option", { text: '自定义', attrs: { value: "custom" } }));
   radModeRow.appendChild(radModeSelect);
 
   const radLevelRow = el("div", { style: "display:flex;gap:4px;align-items:center;" });
-  radLevelRow.appendChild(el("span", { text: '级数(1-6):', style: "font-size:0.9em;" }));
+  radLevelRow.appendChild(el("span", { text: '级数(1-6):', style: "font-size:${V('--fg-font-lg', '0.92em')};" }));
   const radLevelSlider = el("input", { type: "range", attrs: { min: "1", max: "6", step: "1", value: "6" }, style: "width:80px;" }) as HTMLInputElement;
   radLevelRow.appendChild(radLevelSlider);
-  const radLevelValue = el("span", { text: '6', style: "font-size:0.9em;margin-left:4px;" });
+  const radLevelValue = el("span", { text: '6', style: "font-size:${V('--fg-font-lg', '0.92em')};margin-left:4px;" });
   radLevelRow.appendChild(radLevelValue);
 
   const radCustomRow = el("div", { style: "display:none;gap:4px;align-items:center;" });
   const nRad = el("input", { type: "number", attrs: { min: "5", max: "45" }, style: "width:80px;" }) as HTMLInputElement;
   radCustomRow.appendChild(nRad);
-  radCustomRow.appendChild(el("span", { text: 'px', style: "font-size:0.9em;" }));
+  radCustomRow.appendChild(el("span", { text: 'px', style: "font-size:${V('--fg-font-lg', '0.92em')};" }));
 
   radLevelSlider.addEventListener('input', () => {
     radLevelValue.textContent = radLevelSlider.value;
@@ -374,13 +412,13 @@ export function createEditPanel(
   // --- 边编辑区 ---
   const edgeEdit = el("div"); edgeEdit.style.display = 'none';
   edgeEdit.appendChild(el("div", { text: "边", style: "font-weight:bold;margin-bottom:4px;" }));
-  const eIdSpan = el("div", { style: `font-size:0.9em;color:${UI_MUTED};` });
+  const eIdSpan = el("div", { style: `font-size:${V('--fg-font-lg', '0.92em')};color:${V('--fg-text-muted','#888888')};` });
   edgeEdit.appendChild(eIdSpan);
   const eLabel = el("input", { type: "text", style: "width:100%;" }) as HTMLInputElement;
   makeRow(edgeEdit, '关系', eLabel);
   bindAutoSave(eLabel);
   const eColR = el("div", { style: "display:flex;gap:6px;align-items:center;margin:4px 0;" });
-  eColR.appendChild(el("span", { text: '颜色:', style: "flex-shrink:0;font-size:0.9em;" }));
+  eColR.appendChild(el("span", { text: '颜色:', style: "flex-shrink:0;font-size:${V('--fg-font-lg', '0.92em')};" }));
   const eCol = el("input", { type: "color", style: "width:24px;height:24px;padding:0;border:none;" }) as HTMLInputElement;
   eColR.appendChild(eCol);
   bindAutoSave(eCol);
@@ -397,7 +435,7 @@ export function createEditPanel(
 
   // 连线样式
   const eStyleR = el("div", { style: "display:flex;gap:6px;align-items:center;margin-top:4px;" });
-  eStyleR.appendChild(el("span", { text: '线型:', style: "flex-shrink:0;font-size:0.9em;" }));
+  eStyleR.appendChild(el("span", { text: '线型:', style: "flex-shrink:0;font-size:${V('--fg-font-lg', '0.92em')};" }));
   const eStyle = el("select") as HTMLSelectElement;
   ['solid', 'dash-2', 'dash-4', 'dash-8', 'dot', 'dot-dense'].forEach(s => {
     const o = el("option", { text: { solid: '实线', 'dash-2': '虚线 2px', 'dash-4': '虚线 4px', 'dash-8': '虚线 8px', dot: '点线', 'dot-dense': '密点线' }[s], attrs: { value: s } });
@@ -410,7 +448,7 @@ export function createEditPanel(
   // --- 集合编辑区 ---
   const groupEdit = el("div"); groupEdit.style.display = 'none';
   groupEdit.appendChild(el("div", { text: "集合", style: "font-weight:bold;margin-bottom:4px;" }));
-  const gIdSpan = el("div", { style: `font-size:0.9em;color:${UI_MUTED};` });
+  const gIdSpan = el("div", { style: `font-size:${V('--fg-font-lg', '0.92em')};color:${V('--fg-text-muted','#888888')};` });
   groupEdit.appendChild(gIdSpan);
   const gLabel = el("input", { type: "text", attrs: { readonly: "true" }, style: "width:100%;" }) as HTMLInputElement;
   makeRow(groupEdit, '标签', gLabel);
@@ -421,16 +459,16 @@ export function createEditPanel(
   gMode.appendChild(el("option", { text: '色晕', attrs: { value: "fluid" } }));
   makeRow(groupEdit, '显示', gMode);
   bindAutoSave(gMode);
-  const gHint = el("div", { style: `font-size:0.8em;color:${UI_MUTED};display:none;` });
+  const gHint = el("div", { style: `font-size:${V('--fg-font-sm', '0.8em')};color:${V('--fg-text-muted','#888888')};display:none;` });
   groupEdit.appendChild(gHint);
 
   // 节点设色
   const gNodeColorRow = el("div", { style: "margin-top:4px;" });
-  gNodeColorRow.appendChild(el("span", { text: "节点设色", style: "font-weight:bold;font-size:0.9em;" }));
+  gNodeColorRow.appendChild(el("span", { text: "节点设色", style: "font-weight:bold;font-size:${V('--fg-font-lg', '0.92em')};" }));
   groupEdit.appendChild(gNodeColorRow);
 
   const gColorModeRow = el("div");
-  gColorModeRow.appendChild(el("span", { text: "设色:", style: "font-size:0.8em;margin-right:4px;" }));
+  gColorModeRow.appendChild(el("span", { text: "设色:", style: "font-size:${V('--fg-font-sm', '0.8em')};margin-right:4px;" }));
   const groupNodeColorMode = el("select", { style: "width:70px;" }) as HTMLSelectElement;
   groupNodeColorMode.appendChild(el("option", { text: "关闭", attrs: { value: "off" } }));
   groupNodeColorMode.appendChild(el("option", { text: "开启", attrs: { value: "fill" } }));
@@ -440,7 +478,7 @@ export function createEditPanel(
   bindAutoSave(groupNodeColorMode);
 
   const gNodeColorPickerRow = el("div");
-  gNodeColorPickerRow.appendChild(el("span", { text: "颜色:", style: "font-size:0.8em;margin-right:4px;" }));
+  gNodeColorPickerRow.appendChild(el("span", { text: "颜色:", style: "font-size:${V('--fg-font-sm', '0.8em')};margin-right:4px;" }));
   const groupNodeColor = el("input", { type: "color", style: "width:24px;height:24px;padding:0;border:none;" }) as HTMLInputElement;
   gNodeColorPickerRow.appendChild(groupNodeColor);
   groupEdit.appendChild(gNodeColorPickerRow);
@@ -448,10 +486,10 @@ export function createEditPanel(
 
   // 色晕参数
   const fluidRadiusRow = el("div", { style: "display:none;margin-top:4px;" });
-  fluidRadiusRow.appendChild(el("span", { text: "色晕半径", style: "font-size:0.8em;margin-right:4px;" }));
+  fluidRadiusRow.appendChild(el("span", { text: "色晕半径", style: "font-size:${V('--fg-font-sm', '0.8em')};margin-right:4px;" }));
   const fluidRadiusSlider = el("input", { type: "range", attrs: { min: "1", max: "20", step: "1", value: "8" }, style: "width:100px;" }) as HTMLInputElement;
   fluidRadiusRow.appendChild(fluidRadiusSlider);
-  const fluidRadiusValue = el("span", { text: '8', style: "font-size:0.8em;margin-left:4px;" });
+  const fluidRadiusValue = el("span", { text: '8', style: "font-size:${V('--fg-font-sm', '0.8em')};margin-left:4px;" });
   fluidRadiusRow.appendChild(fluidRadiusValue);
   fluidRadiusSlider.addEventListener('input', () => {
     fluidRadiusValue.textContent = fluidRadiusSlider.value;
@@ -460,10 +498,10 @@ export function createEditPanel(
   groupEdit.appendChild(fluidRadiusRow);
 
   const fluidOpacityRow = el("div", { style: "display:none;margin-top:4px;" });
-  fluidOpacityRow.appendChild(el("span", { text: "色晕不透明度", style: "font-size:0.8em;margin-right:4px;" }));
+  fluidOpacityRow.appendChild(el("span", { text: "色晕不透明度", style: "font-size:${V('--fg-font-sm', '0.8em')};margin-right:4px;" }));
   const fluidOpacitySlider = el("input", { type: "range", attrs: { min: "0.1", max: "1", step: "0.05", value: "0.4" }, style: "width:100px;" }) as HTMLInputElement;
   fluidOpacityRow.appendChild(fluidOpacitySlider);
-  const fluidOpacityValue = el("span", { text: '0.4', style: "font-size:0.8em;margin-left:4px;" });
+  const fluidOpacityValue = el("span", { text: '0.4', style: "font-size:${V('--fg-font-sm', '0.8em')};margin-left:4px;" });
   fluidOpacityRow.appendChild(fluidOpacityValue);
   fluidOpacitySlider.addEventListener('input', () => {
     fluidOpacityValue.textContent = fluidOpacitySlider.value;
@@ -479,7 +517,7 @@ export function createEditPanel(
 
   // 背景设置
   const gColR = el("div", { style: "display:flex;gap:6px;align-items:center;margin:4px 0;" });
-  gColR.appendChild(el("span", { text: '背景:', style: "flex-shrink:0;font-size:0.9em;" }));
+  gColR.appendChild(el("span", { text: '背景:', style: "flex-shrink:0;font-size:${V('--fg-font-lg', '0.92em')};" }));
   const gCol = el("input", { type: "color", style: "width:24px;height:24px;padding:0;border:none;" }) as HTMLInputElement;
   gColR.appendChild(gCol);
   bindAutoSave(gCol);
@@ -487,7 +525,7 @@ export function createEditPanel(
   groupEdit.appendChild(gColR);
 
   const gBColR = el("div", { style: "display:flex;gap:6px;align-items:center;margin:4px 0;" });
-  gBColR.appendChild(el("span", { text: '边框:', style: "flex-shrink:0;font-size:0.9em;" }));
+  gBColR.appendChild(el("span", { text: '边框:', style: "flex-shrink:0;font-size:${V('--fg-font-lg', '0.92em')};" }));
   const gBCol = el("input", { type: "color", style: "width:24px;height:24px;padding:0;border:none;" }) as HTMLInputElement;
   gBColR.appendChild(gBCol);
   bindAutoSave(gBCol);
@@ -498,15 +536,15 @@ export function createEditPanel(
   bindAutoSave(gOp);
 
   groupEdit.appendChild(el("div", { text: '成员' }));
-  const gMems = el("div", { style: "max-height:100px;overflow-y:auto;border:1px solid #ccc;padding:4px;border-radius:4px;font-size:0.8em;" });
+  const gMems = el("div", { style: "max-height:100px;overflow-y:auto;border:1px solid #ccc;padding:4px;border-radius:4px;font-size:${V('--fg-font-sm', '0.8em')};" });
   groupEdit.appendChild(gMems);
 
-  const delGBtn = el("button", { text: '删除集合', style: `background:${UI_RED};color:white;` });
+  const delGBtn = el("button", { text: '删除集合', style: `background:${V('--fg-danger','#e03030')};color:white;` });
   groupEdit.appendChild(delGBtn);
 
   // --- 底部按钮 ---
   const btnG = el("div", { style: "display:flex;gap:6px;justify-content:flex-end;" });
-  const deleteBtn = el("button", { text: '删除', style: `background:${UI_RED};color:white;` });
+  const deleteBtn = el("button", { text: '删除', style: `background:${V('--fg-danger','#e03030')};color:white;` });
   btnG.appendChild(deleteBtn);
 
   // 组装
@@ -613,7 +651,7 @@ export function createEditPanel(
     clearEd(); getInitSim()(); getUpdateInfo()(); getUpdateSelects()();
   };
   delGBtn.onclick = async () => {
-    if (getSelGroup() && confirm('确定删除此集合？')) {
+    if (getSelGroup() && await confirmAction('确定删除此集合？')) {
       graph.groups = graph.groups.filter(g => g.id !== getSelGroup());
       await getSaveData()();
       clearEd(); getInitSim()(); getUpdateInfo()(); getUpdateSelects()();

@@ -359,3 +359,174 @@ export function getTheme(name: string): ThemeConfig {
 export function getThemeLabel(name: string): string {
   return THEME_LABELS[name] || name;
 }
+
+// ---- CSS Custom Properties System ----
+// Derives a complete set of CSS variables from a ThemeConfig.
+// All UI components reference these variables instead of hardcoded colors.
+
+export interface ThemeVars {
+  [key: string]: string;
+}
+
+export function isThemeDark(t: ThemeConfig): boolean {
+  const bg = t.canvasBackground;
+  const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(bg);
+  if (!m) return true;
+  const r = parseInt(m[1], 16);
+  const g = parseInt(m[2], 16);
+  const b = parseInt(m[3], 16);
+  const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  return lum < 0.5;
+}
+
+function hexToRgbNum(hex: string): [number, number, number] {
+  const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+  if (!m) return [40, 42, 48];
+  return [parseInt(m[1], 16), parseInt(m[2], 16), parseInt(m[3], 16)];
+}
+
+/** Lighten/darken a hex color by a ratio. Positive = lighter, negative = darker. */
+function adjustHex(hex: string, ratio: number): string {
+  const [r, g, b] = hexToRgbNum(hex);
+  const f = (c: number) => Math.round(Math.min(255, Math.max(0, c + (255 - c) * ratio)));
+  const g2 = (c: number) => Math.round(Math.min(255, Math.max(0, c * (1 + ratio))));
+  // For lightening, use f(); for darkening, use g2()
+  if (ratio >= 0) {
+    return "#" + [f(r), f(g), f(b)].map(v => v.toString(16).padStart(2, "0")).join("");
+  } else {
+    return "#" + [g2(r), g2(g), g2(b)].map(v => v.toString(16).padStart(2, "0")).join("");
+  }
+}
+
+export function deriveThemeVars(t: ThemeConfig): ThemeVars {
+  const dark = isThemeDark(t);
+  const [sr, sg, sb] = hexToRgbNum(t.uiPanelBackground);
+
+  // Glassmorphism: use the panel background with transparency
+  const glassAlpha = dark ? "0.65" : "0.55";
+  const glassBorderAlpha = dark ? "0.08" : "0.12";
+
+  // Elevated surface (modals, dialogs) — slightly more opaque
+  const elevatedAlpha = dark ? "0.85" : "0.80";
+
+  // Hover state — slightly lighter/darker
+  const hoverAmount = dark ? 0.08 : -0.06;
+
+  // Text colors
+  const textMuted = adjustHex(t.uiButtonTextColor, dark ? -0.35 : 0.35);
+  const textDim = adjustHex(t.uiButtonTextColor, dark ? -0.55 : 0.50);
+
+  return {
+    // Canvas
+    "--fg-canvas-bg": t.canvasBackground,
+
+    // Surfaces
+    "--fg-surface": t.uiPanelBackground,
+    "--fg-surface-glass": `rgba(${sr},${sg},${sb},${glassAlpha})`,
+    "--fg-surface-elevated": `rgba(${sr},${sg},${sb},${elevatedAlpha})`,
+
+    // Text
+    "--fg-text": t.uiButtonTextColor,
+    "--fg-text-muted": textMuted,
+    "--fg-text-dim": textDim,
+
+    // Borders
+    "--fg-border": t.uiInputBorder,
+    "--fg-border-light": dark
+      ? "rgba(255,255,255,0.08)"
+      : "rgba(0,0,0,0.08)",
+
+    // Inputs
+    "--fg-input-bg": t.uiInputBackground,
+    "--fg-input-text": t.uiInputTextColor,
+    "--fg-input-border": t.uiInputBorder,
+
+    // Buttons
+    "--fg-button-bg": t.uiButtonBackground,
+    "--fg-button-text": t.uiButtonTextColor,
+    "--fg-button-hover": adjustHex(t.uiButtonBackground, hoverAmount),
+
+    // Accent (primary action color)
+    "--fg-accent": "#5B8FF9",
+    "--fg-accent-hover": "#4a7ce0",
+    "--fg-accent-text": "#ffffff",
+
+    // Danger (destructive action color)
+    "--fg-danger": "#e03030",
+    "--fg-danger-hover": "#c52828",
+
+    // Shadows (adapt to theme brightness)
+    "--fg-shadow-sm": dark
+      ? "0 1px 3px rgba(0,0,0,0.3)"
+      : "0 1px 3px rgba(0,0,0,0.08)",
+    "--fg-shadow-md": dark
+      ? "0 4px 16px rgba(0,0,0,0.4)"
+      : "0 4px 16px rgba(0,0,0,0.12)",
+    "--fg-shadow-lg": dark
+      ? "0 8px 32px rgba(0,0,0,0.5)"
+      : "0 8px 32px rgba(0,0,0,0.15)",
+
+    // Glass effect
+    "--fg-glass-blur": "12px",
+    "--fg-glass-blur-sm": "4px",
+    "--fg-glass-blur-md": "10px",
+    "--fg-glass-blur-lg": "16px",
+    "--fg-glass-border": dark
+      ? "rgba(255,255,255,0.08)"
+      : "rgba(0,0,0,0.08)",
+
+    // Border radii
+    "--fg-radius-sm": "4px",
+    "--fg-radius-md": "8px",
+    "--fg-radius-lg": "12px",
+
+    // Layout
+    "--fg-label-width": "110px",
+    "--fg-input-number-width": "55px",
+    "--fg-line-height": "1.5",
+
+    // Font sizes
+    "--fg-font-xxs": "0.65em",
+    "--fg-font-xs": "0.72em",
+    "--fg-font-sm": "0.8em",
+    "--fg-font-md": "0.85em",
+    "--fg-font-lg": "0.92em",
+    "--fg-font-xl": "1.1em",
+
+    // Transitions
+    "--fg-transition-fast": "0.15s ease",
+    "--fg-transition": "0.25s ease",
+
+    // Scrollbar
+    "--fg-scrollbar-thumb": dark
+      ? "rgba(255,255,255,0.15)"
+      : "rgba(0,0,0,0.15)",
+    "--fg-scrollbar-thumb-hover": dark
+      ? "rgba(255,255,255,0.3)"
+      : "rgba(0,0,0,0.25)",
+
+    // Sidebar specific
+    "--fg-sidebar-bg": t.uiPanelBackground,
+    "--fg-sidebar-border": t.uiInputBorder,
+    "--fg-sidebar-header-text": t.uiButtonTextColor,
+    "--fg-sidebar-item-hover": adjustHex(t.uiPanelBackground, dark ? 0.08 : -0.06),
+    "--fg-sidebar-item-active": adjustHex(t.uiPanelBackground, dark ? 0.14 : -0.10),
+
+    // Tab bar
+    "--fg-tab-inactive": textMuted,
+    "--fg-tab-active-bg": t.uiInputBackground,
+    "--fg-tab-active-border": t.uiInputBorder,
+  };
+}
+
+/** Apply theme CSS variables to a DOM element (usually :root / document.documentElement). */
+export function applyThemeVars(el: HTMLElement, t: ThemeConfig): void {
+  const vars = deriveThemeVars(t);
+  const style = el.style;
+  for (const [key, val] of Object.entries(vars)) {
+    style.setProperty(key, val);
+  }
+}
+
+/** Default CSS variable values (generic-dark), for use as fallback in CSS. */
+export const CSS_VAR_DEFAULTS = deriveThemeVars(THEMES["generic-dark"]);

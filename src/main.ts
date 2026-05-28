@@ -306,6 +306,7 @@ async function main() {
         await writeGraphFile(path, empty);
       }
       await writeGraphData(path, empty);
+      await refreshFileTree();
       await openTab(path);
     },
     onDeleteFile: async (path) => {
@@ -1297,7 +1298,7 @@ async function main() {
       const h = await openFolder();
       if (h) { await saveFolderHandle(h); fileSystemMountPath = h.name; await refreshFileTree(); }
     },
-    getFolderPath: () => fileSystemMountPath || (isHarmony ? 'localStorage' : '（未选择）'),
+    getFolderPath: () => fileSystemMountPath || '（未选择）',
     getFileImporter: undefined, // 所有平台统一用 onOpenFolder → 同步 input.click()
     getAutoUpdate: () => localStorage.getItem('fg-auto-update') === 'true',
     onToggleAutoUpdate: (val) => { localStorage.setItem('fg-auto-update', val ? 'true' : 'false'); },
@@ -2267,6 +2268,15 @@ async function main() {
   // 尝试恢复文件夹
   fileSystemMountPath = 'graphs';
   await refreshFileTree();
+  // Capacitor 可能还没初始化 → 延迟重试几次
+  let _retry = 0;
+  const _retryRefresh = () => {
+    if (_retry++ > 4) return;
+    setTimeout(async () => { await refreshFileTree(); }, _retry === 1 ? 500 : 1500);
+  };
+  try {
+    if ((await listFilesMobile()).length === 0) _retryRefresh();
+  } catch { _retryRefresh(); }
   // Electron / 桌面模式：有额外文件夹恢复路径
   const ea2 = (window as any).electronAPI;
   if (ea2) {

@@ -74,6 +74,15 @@ if %errorlevel% neq 0 (
     exit /b %errorlevel%
 )
 
+echo [2.5/3] Copying APK to repo...
+copy /y "android\app\build\outputs\apk\debug\app-debug.apk" "ForceGraph.apk" >nul
+if %errorlevel% neq 0 (
+    echo APK copy failed! APK not found at expected path.
+    pause
+    exit /b %errorlevel%
+)
+echo   Copied to ForceGraph.apk
+
 echo.
 echo [3/3] Waiting for stable GitHub connection...
 echo.

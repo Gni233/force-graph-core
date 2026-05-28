@@ -110,7 +110,22 @@ export async function deleteFileMobile(fileName: string): Promise<boolean> {
   }
 }
 
-/** 下载 APK 并触发安装（使用 blob URL，无需文件权限） */
+/** 通过原生 Capacitor 插件后台下载并安装 APK */
+export async function installApk(url: string): Promise<void> {
+  const plugin = (window as any).Capacitor?.Plugins?.ApkInstaller;
+  if (plugin) {
+    try {
+      await plugin.downloadAndInstall({ url, fileName: 'force-graph-update.apk' });
+      return;
+    } catch (e) {
+      console.error('Native install failed, fallback:', e);
+    }
+  }
+  // 回退到浏览器下载
+  downloadApk(url);
+}
+
+/** 下载 APK 到浏览器（非 Capacitor 环境回退） */
 export async function downloadApk(url: string): Promise<void> {
   try {
     const resp = await fetch(url);
@@ -131,14 +146,14 @@ export async function downloadApk(url: string): Promise<void> {
   }
 }
 
-/** 下载最新 Release 的 APK */
+/** 下载最新 Release 的 APK 并安装 */
 export async function downloadReleaseApk(): Promise<void> {
   try {
     const resp = await fetch('https://api.github.com/repos/Gni233/force-graph-core/releases/latest');
     const data = await resp.json();
     const apk = data.assets?.find((a: any) => a.name.endsWith('.apk'));
     if (apk) {
-      await downloadApk(apk.browser_download_url);
+      await installApk(apk.browser_download_url);
     } else {
       window.open(data.html_url || 'https://github.com/Gni233/force-graph-core/releases', '_blank');
     }

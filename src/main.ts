@@ -13,7 +13,7 @@ import { createSidebar } from './ui-sidebar';
 import { createTabBar } from './ui-tabs';
 import { openFolder, restoreFolder, listFileTree, flatFilePaths, readGraphFile, writeGraphFile, deleteFile, renameFile } from './file-system';
 import { saveFolderHandle, loadFolderHandle, clearFolderHandle } from './folder-store';
-import { isCapacitor, createFileImporter, listFilesMobile, readFileMobile, writeFileMobile, deleteFileMobile, downloadApk, downloadReleaseApk } from './fs-mobile';
+import { isCapacitor, createFileImporter, listFilesMobile, readFileMobile, writeFileMobile, deleteFileMobile, downloadApk, downloadReleaseApk, installApk } from './fs-mobile';
 import { isHarmonyOS } from './utils/platform';
 import { listFilesHarmony, readFileHarmony, writeFileHarmony, deleteFileHarmony, createHarmonyFileImporter } from './fs-harmony';
 import { safePrompt } from './dialog';
@@ -1231,7 +1231,7 @@ async function main() {
       showUpdateDialog(info, () => {
         const asset = info.assets.find(a => a.name.endsWith('.apk'));
         const dlUrl = asset?.downloadUrl || info.htmlUrl;
-        if (capApp) { downloadApk(dlUrl); }
+        if (capApp) { installApk(dlUrl); }
         else { window.open(dlUrl, '_blank'); }
       });
     },

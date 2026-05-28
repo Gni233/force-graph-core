@@ -155,25 +155,18 @@ export async function installApk(url: string): Promise<void> {
   downloadApk(url);
 }
 
-/** 下载 APK 到浏览器（非 Capacitor 环境回退） */
+/** 下载 APK — 使用直接 URL + <a download>，兼容华为/鸿蒙 WebView */
 export async function downloadApk(url: string): Promise<void> {
-  try {
-    const resp = await fetch(url);
-    const blob = await resp.blob();
-    const blobUrl = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = blobUrl;
-    a.download = 'force-graph-update.apk';
-    a.style.display = 'none';
-    document.body.appendChild(a);
-    a.click();
-    setTimeout(() => {
-      document.body.removeChild(a);
-      URL.revokeObjectURL(blobUrl);
-    }, 2000);
-  } catch {
-    window.open(url, '_blank');
-  }
+  // 方案：直接用原始 URL + <a download>，不走 blob（华为 WebView 不支持 blob 下载）
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'force-graph-update.apk';
+  a.target = '_blank';
+  a.rel = 'noopener';
+  a.style.display = 'none';
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => document.body.removeChild(a), 1000);
 }
 
 /** 下载最新 Release 的 APK 并安装 */

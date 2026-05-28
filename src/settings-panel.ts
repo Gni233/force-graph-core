@@ -186,13 +186,12 @@ export function createSettingsPanel(
       importer.textContent = '打开目录';
       folderRow.appendChild(importer);
     } else if (callbacks.onImportFiles) {
-      // 移动端：<input type="file"> 直接嵌入按钮，覆盖整个按钮区域
-      // 用户触碰的是真正的 input 元素，浏览器/WebView 原生触发选择器
-      // 不依赖 label-for，不依赖 JS click() 模拟
-      const openBtn = document.createElement('button');
+      // 移动端：用 <label>（不是 <button>）包裹 <input type="file">
+      // <button> 在某些 WebView 会吞掉子元素的触摸事件 → label 不会
+      const openBtn = document.createElement('label');
       openBtn.textContent = '打开目录';
       openBtn.style.cssText =
-        `position:relative;overflow:hidden;` +
+        `position:relative;overflow:hidden;display:inline-block;` +
         `font-size:0.75em;padding:2px 8px;cursor:pointer;` +
         `background:${V('--fg-button-bg', 'rgba(255,255,255,0.08)')};` +
         `color:${V('--fg-text', '#ccc')};` +
@@ -204,7 +203,7 @@ export function createSettingsPanel(
       fileInput.accept = '.json,application/json';
       fileInput.multiple = true;
       fileInput.style.cssText =
-        'position:absolute;inset:0;opacity:0;font-size:0;cursor:pointer;';
+        'position:absolute;top:0;left:0;width:100%;height:100%;opacity:0;cursor:pointer;';
 
       fileInput.addEventListener('change', async () => {
         const files = fileInput.files;

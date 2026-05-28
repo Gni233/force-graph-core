@@ -3,6 +3,7 @@
  * 使用 @capacitor/filesystem 存储，使用 HTML 文件选择器导入
  */
 import { Filesystem, Directory } from '@capacitor/filesystem';
+import { FilePicker } from '@capawesome/capacitor-file-picker';
 
 const WORK_DIR = 'graphs';
 
@@ -10,6 +11,50 @@ async function ensureWorkDir(): Promise<void> {
   try {
     await Filesystem.mkdir({ path: WORK_DIR, directory: Directory.Data, recursive: true });
   } catch {}
+}
+
+/**
+ * 原生 Android 目录选择器 → 列出目录中 .json 文件并导入。
+ * 使用 SAF (Storage Access Framework)，兼容华为/鸿蒙。
+ */
+export async function pickDirectoryAndImport(): Promise<number> {
+  const dirResult = await FilePicker.pickDirectory();
+  const dirPath = dirResult.path;
+  if (!dirPath) return 0;
+
+  // 列出目录中的 .json 文件
+  let jsonFiles: { name: string; path: string }[] = [];
+  try {
+    // 尝试用 Filesystem 列出文件（路径可能是 content:// 或 file://）
+    const listing = await Filesystem.readdir({ path: dirPath });
+    jsonFiles = listing.files
+      .filter(f => f.name.endsWith('.json'))
+      .map(f => ({ name: f.name, path: dirPath + '/' + f.name }));
+  } catch {
+    // content:// URI 无法直接用 Filesystem 列出 → 回退 file picker
+    console.warn('Cannot list directory via Filesystem, using file picker fallback');
+    return -1; // 返回 -1 表示需要回退
+  }
+
+  // 读取并导入每个 .json 文件
+  let imported = 0;
+  await ensureWorkDir();
+  for (const f of jsonFiles) {
+    try {
+      const result = await Filesystem.readFile({ path: f.path });
+      const text = result.data as string;
+      JSON.parse(text);
+      await Filesystem.writeFile({
+        path: `${WORK_DIR}/${f.name}`,
+        data: text,
+        directory: Directory.Data,
+      });
+      imported++;
+    } catch (e) {
+      console.error('import failed:', f.name, e);
+    }
+  }
+  return imported;
 }
 
 /**

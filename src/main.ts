@@ -13,7 +13,7 @@ import { createSidebar } from './ui-sidebar';
 import { createTabBar } from './ui-tabs';
 import { openFolder, restoreFolder, listFileTree, flatFilePaths, readGraphFile, writeGraphFile, deleteFile, renameFile } from './file-system';
 import { saveFolderHandle, loadFolderHandle, clearFolderHandle } from './folder-store';
-import { isCapacitor, importFilesMobile, listFilesMobile, readFileMobile, writeFileMobile, deleteFileMobile, downloadApk, downloadReleaseApk, installApk } from './fs-mobile';
+import { isCapacitor, importFilesMobile, pickDirectoryAndImport, listFilesMobile, readFileMobile, writeFileMobile, deleteFileMobile, downloadApk, downloadReleaseApk, installApk } from './fs-mobile';
 import { isHarmonyOS } from './utils/platform';
 import { listFilesHarmony, readFileHarmony, writeFileHarmony, deleteFileHarmony, importFilesHarmony } from './fs-harmony';
 import { safePrompt } from './dialog';
@@ -420,25 +420,41 @@ async function main() {
     sidebar.updateFileTree(tree, activeTab);
   };
 
-  // ===== 文件导入按钮（固定右下角，label+input，已验证可用）=====
-    const importLabel = document.createElement('label');
-    importLabel.style.cssText =
+  // ===== 文件夹/文件导入按钮 =====
+    const fabBtn = document.createElement('label');
+    fabBtn.style.cssText =
       'position:fixed;bottom:10px;right:10px;z-index:99999;' +
       'display:inline-flex;align-items:center;gap:4px;' +
       `background:${V('--fg-accent','#5B8FF9')};color:#fff;` +
       'padding:10px 16px;font-size:14px;font-weight:bold;' +
       'border-radius:8px;cursor:pointer;' +
       'box-shadow:0 2px 12px rgba(0,0,0,0.3);';
-    importLabel.textContent = '选择目录';
-    const importInput = document.createElement('input');
-    importInput.type = 'file';
-    importInput.accept = '.json,application/json';
-    importInput.multiple = true;
-    // @ts-ignore webkitdirectory 触发 Android 原生目录选择器
-    importInput.webkitdirectory = true;
-    importInput.style.cssText = 'position:absolute;width:0;height:0;opacity:0;';
-    importInput.addEventListener('change', async () => {
-      const files = importInput.files;
+    fabBtn.textContent = '选择目录';
+
+    const doPickDir = async () => {
+      try {
+        const count = await pickDirectoryAndImport();
+        if (count > 0) {
+          fileSystemMountPath = 'graphs';
+          await refreshFileTree();
+          showToast(`已导入 ${count} 个文件`, 'success');
+          return;
+        }
+      } catch (e: any) {
+        if (e.message?.includes('cancel') || e.message?.includes('Canceled')) return;
+      }
+      // 原生目录选择失败 → 回退文件选择器
+      fabInput.click();
+    };
+    fabBtn.addEventListener('pointerdown', (e) => { e.preventDefault(); doPickDir(); });
+
+    const fabInput = document.createElement('input');
+    fabInput.type = 'file';
+    fabInput.accept = '.json,application/json';
+    fabInput.multiple = true;
+    fabInput.style.cssText = 'position:absolute;width:0;height:0;opacity:0;';
+    fabInput.addEventListener('change', async () => {
+      const files = fabInput.files;
       if (!files || files.length === 0) return;
       try {
         if (capApp) {
@@ -448,15 +464,15 @@ async function main() {
           await importFilesHarmony(files);
         }
         await refreshFileTree();
-        importInput.value = '';
+        fabInput.value = '';
         showToast(`已导入 ${files.length} 个文件`, 'success');
       } catch (e) {
         console.error('import error:', e);
         showToast('导入失败', 'error');
       }
     });
-    importLabel.appendChild(importInput);
-    appShell.appendChild(importLabel);
+    fabBtn.appendChild(fabInput);
+    appShell.appendChild(fabBtn);
 
   // ===== 图加载函数 =====
   async function loadGraphData(fileName: string) {

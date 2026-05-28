@@ -200,7 +200,7 @@ export async function installApk(url: string): Promise<void> {
   downloadApk(url);
 }
 
-/** 下载 APK 到外部存储并尝试安装 */
+/** 下载 APK 到应用存储 */
 export async function downloadApk(url: string): Promise<void> {
   try {
     const resp = await fetch(url);
@@ -216,34 +216,34 @@ export async function downloadApk(url: string): Promise<void> {
     }
     base64 = btoa(base64);
 
-    // 保存到应用外部存储目录
-    await ensureWorkDir();
     const fileName = 'force-graph-update.apk';
+    await ensureWorkDir();
+    // 优先存到外部存储（用户文件管理器能找到）
     await Filesystem.writeFile({
       path: `${WORK_DIR}/${fileName}`,
       data: base64,
       directory: Directory.ExternalStorage,
-    }).catch(() => {
-      // ExternalStorage 可能不可用 → 回退 Data 目录
-      return Filesystem.writeFile({
+    }).catch(async () => {
+      // 回退 Data 目录
+      await Filesystem.writeFile({
         path: `${WORK_DIR}/${fileName}`,
         data: base64,
         directory: Directory.Data,
       });
     });
 
-    // 尝试原生安装
+    // 存好了 → 尝试原生安装（如果有插件）
     const plugin = (window as any).Capacitor?.Plugins?.ApkInstaller;
     if (plugin) {
       await plugin.downloadAndInstall({ url, fileName });
       return;
     }
 
-    // 回退：用下载 URL 在本窗口打开（WebView 会尝试下载/安装）
-    window.open(url, '_self');
+    // 无插件 → 告知用户手动安装
+    alert('APK 已下载到应用存储\n请在文件管理器中找到 force-graph-update.apk 安装');
   } catch (e) {
     console.error('Download failed:', e);
-    window.open(url, '_blank');
+    alert('下载失败，请检查网络后重试');
   }
 }
 

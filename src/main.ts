@@ -395,6 +395,14 @@ async function main() {
       sidebar.updateFileTree(files, activeTab);
       return;
     }
+    // 非 Capacitor/鸿蒙但可能有 localStorage 文件（浏览器回退存储）
+    if (!capApp && !isHarmony) {
+      const harmonyFiles = await listFilesHarmony();
+      if (harmonyFiles.length > 0) {
+        sidebar.updateFileTree(harmonyFiles, activeTab);
+        return;
+      }
+    }
     // Electron 模式：直接用 fs 读目录
     const ea = (window as any).electronAPI;
     if (fileSystemMountPath && ea?.readDir) {
@@ -432,8 +440,7 @@ async function main() {
     fabBtn.textContent = '选择目录';
 
     const doPickDir = async () => {
-      // 方式1：Web File System Access API（showDirectoryPicker）
-      // Chrome/WebView 86+ 支持，选择后持久化，可读可写 —— 和桌面版一样
+      // 方式1：Web File System Access API（持久化，可读写，桌面/现代Chrome WebView）
       if ('showDirectoryPicker' in window) {
         try {
           const h = await openFolder();
@@ -441,31 +448,28 @@ async function main() {
             await saveFolderHandle(h);
             fileSystemMountPath = h.name;
             await refreshFileTree();
-            showToast(`已打开目录: ${h.name}`, 'success');
+            showToast(`已打开: ${h.name}`, 'success');
             return;
           }
         } catch (e: any) {
           if (e.name === 'AbortError') return;
         }
       }
-      // 方式2：Capacitor 原生 SAF 目录选择器
-      try {
-        const count = await pickDirectoryAndImport();
-        if (count > 0) {
-          fileSystemMountPath = 'graphs';
-          await refreshFileTree();
-          showToast(`已导入 ${count} 个文件`, 'success');
-          return;
+      // 方式2：Capacitor 原生 SAF 选目录
+      if (capApp) {
+        try {
+          const count = await pickDirectoryAndImport();
+          if (count > 0) {
+            fileSystemMountPath = 'graphs';
+            await refreshFileTree();
+            showToast(`已导入 ${count} 个文件`, 'success');
+            return;
+          }
+        } catch (e: any) {
+          if (e.message?.includes('cancel') || e.message?.includes('Canceled')) return;
         }
-        if (count === -1) {
-          showToast('目录无法直接读取，请选择文件导入', 'warning');
-          fabInput.click();
-          return;
-        }
-      } catch (e: any) {
-        if (e.message?.includes('cancel') || e.message?.includes('Canceled')) return;
       }
-      // 方式3：回退 HTML 文件选择器
+      // 方式3：直接文件选择器（最可靠）
       fabInput.click();
     };
     fabBtn.addEventListener('pointerdown', (e) => { e.preventDefault(); doPickDir(); });
@@ -2284,6 +2288,9 @@ async function main() {
       if (savedHandle) {
         const ok = await restoreFolder(savedHandle);
         if (ok) { await refreshFileTree(); }
+      } else {
+        // 无保存句柄→尝试 localStorage 回退（移动端浏览器导入的文件）
+        await refreshFileTree();
       }
     }
   }

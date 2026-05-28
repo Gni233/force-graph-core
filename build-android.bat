@@ -90,7 +90,8 @@ set TAG=v%VERSION%
 echo   Version: %VERSION%  Tag: %TAG%
 
 :: 必须先删远程 tag，再删 Release（否则旧 tag 仍指向老 commit）
-git push origin --delete %TAG% 2>nul
+:: 不加 2>nul —— 让网络错误可见
+git push origin --delete %TAG%
 gh release delete %TAG% --yes 2>nul
 
 :: --target main 确保 tag 指向最新 main 分支

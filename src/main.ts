@@ -430,11 +430,13 @@ async function main() {
       'padding:10px 16px;font-size:14px;font-weight:bold;' +
       'border-radius:8px;cursor:pointer;' +
       'box-shadow:0 2px 12px rgba(0,0,0,0.3);';
-    importLabel.textContent = '导入 JSON';
+    importLabel.textContent = '选择目录';
     const importInput = document.createElement('input');
     importInput.type = 'file';
     importInput.accept = '.json,application/json';
     importInput.multiple = true;
+    // @ts-ignore webkitdirectory 触发 Android 原生目录选择器
+    importInput.webkitdirectory = true;
     importInput.style.cssText = 'position:absolute;width:0;height:0;opacity:0;';
     importInput.addEventListener('change', async () => {
       const files = importInput.files;

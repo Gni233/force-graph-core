@@ -22,6 +22,8 @@ export function createSettingsPanel(
     getPresets: () => { name: string }[];
     onOpenFolder?: () => void;
     getFolderPath?: () => string;
+    /** 移动端：传入此回调时，按钮内嵌 <input type="file"> 直接触发原生选择器 */
+    onImportFiles?: (files: FileList) => Promise<void>;
     getFileImporter?: () => HTMLElement | null;
     getAutoUpdate?: () => boolean;
     onToggleAutoUpdate?: (val: boolean) => void;
@@ -183,6 +185,37 @@ export function createSettingsPanel(
         `border-radius:${V('--fg-radius-sm', '4px')};`;
       importer.textContent = '打开目录';
       folderRow.appendChild(importer);
+    } else if (callbacks.onImportFiles) {
+      // 移动端：<input type="file"> 直接嵌入按钮，覆盖整个按钮区域
+      // 用户触碰的是真正的 input 元素，浏览器/WebView 原生触发选择器
+      // 不依赖 label-for，不依赖 JS click() 模拟
+      const openBtn = document.createElement('button');
+      openBtn.textContent = '打开目录';
+      openBtn.style.cssText =
+        `position:relative;overflow:hidden;` +
+        `font-size:0.75em;padding:2px 8px;cursor:pointer;` +
+        `background:${V('--fg-button-bg', 'rgba(255,255,255,0.08)')};` +
+        `color:${V('--fg-text', '#ccc')};` +
+        `border:1px solid ${V('--fg-border-light', 'rgba(255,255,255,0.15)')};` +
+        `border-radius:${V('--fg-radius-sm', '4px')};`;
+
+      const fileInput = document.createElement('input');
+      fileInput.type = 'file';
+      fileInput.accept = '.json,application/json';
+      fileInput.multiple = true;
+      fileInput.style.cssText =
+        'position:absolute;inset:0;opacity:0;font-size:0;cursor:pointer;';
+
+      fileInput.addEventListener('change', async () => {
+        const files = fileInput.files;
+        if (!files || files.length === 0) return;
+        await callbacks.onImportFiles?.(files);
+        fileInput.value = '';
+        pathLabel.textContent = callbacks.getFolderPath?.() || '（未选择）';
+      });
+
+      openBtn.appendChild(fileInput);
+      folderRow.appendChild(openBtn);
     } else {
       const openBtn = document.createElement('button');
       openBtn.textContent = '打开目录';

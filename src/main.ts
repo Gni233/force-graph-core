@@ -13,9 +13,9 @@ import { createSidebar } from './ui-sidebar';
 import { createTabBar } from './ui-tabs';
 import { openFolder, restoreFolder, listFileTree, flatFilePaths, readGraphFile, writeGraphFile, deleteFile, renameFile } from './file-system';
 import { saveFolderHandle, loadFolderHandle, clearFolderHandle } from './folder-store';
-import { isCapacitor, openFilePickerMobile, listFilesMobile, readFileMobile, writeFileMobile, deleteFileMobile, downloadApk, downloadReleaseApk, installApk } from './fs-mobile';
+import { isCapacitor, importFilesMobile, listFilesMobile, readFileMobile, writeFileMobile, deleteFileMobile, downloadApk, downloadReleaseApk, installApk } from './fs-mobile';
 import { isHarmonyOS } from './utils/platform';
-import { listFilesHarmony, readFileHarmony, writeFileHarmony, deleteFileHarmony, openFilePickerHarmony } from './fs-harmony';
+import { listFilesHarmony, readFileHarmony, writeFileHarmony, deleteFileHarmony, importFilesHarmony } from './fs-harmony';
 import { safePrompt } from './dialog';
 import { checkUpdate, UpdateInfo } from './update-checker';
 import { showUpdateDialog } from './update-dialog';
@@ -1187,22 +1187,17 @@ async function main() {
       settingsUI.updateInfo(); scheduleSave(); simManager.initSim(); draw();
     },
     getPresets: () => settingPresets,
-    onOpenFolder: async () => {
+    onImportFiles: (capApp || isHarmony) ? async (files: FileList) => {
       if (capApp) {
-        // Capacitor: 在用户手势上下文中同步创建 input 并 .click()
+        await importFilesMobile(files);
         fileSystemMountPath = 'graphs';
-        openFilePickerMobile(async () => {
-          await refreshFileTree();
-        });
-        return;
+      } else {
+        await importFilesHarmony(files);
       }
-      if (isHarmony) {
-        // 鸿蒙：同步创建 input 并 .click()，存入 localStorage
-        openFilePickerHarmony(async () => {
-          await refreshFileTree();
-        });
-        return;
-      }
+      await refreshFileTree();
+    } : undefined,
+    onOpenFolder: async () => {
+      // 桌面端：Electron IPC 或浏览器 showDirectoryPicker
       const ea = (window as any).electronAPI;
       if (ea?.openFolder) {
         const folderPath = await ea.openFolder();

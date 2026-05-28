@@ -13,49 +13,26 @@ async function ensureWorkDir(): Promise<void> {
 }
 
 /**
- * 在 Capacitor WebView 中打开原生文件选择器。
- * 核心思路：在用户手势（click）上下文中同步创建 <input type="file">、
- * 插入 DOM、直接 .click() —— 不依赖 label-for，不依赖 Capacitor 插件。
- * 这是所有 Android WebView（含华为/鸿蒙）都支持的底层机制。
+ * 处理用户选取的 JSON 文件：验证并写入 Capacitor Filesystem 存储。
+ * 供设置面板内嵌 <input type="file"> 的 change 事件调用。
  */
-export function openFilePickerMobile(onDone: () => void): void {
-  const input = document.createElement('input');
-  input.type = 'file';
-  input.accept = '.json,application/json';
-  input.multiple = true;
-  // opacity:0 + position:absolute（不占空间）但留在视口内，避免某些 WebView 拒绝
-  // 对屏幕外元素调用 .click()
-  input.style.cssText =
-    'position:absolute;top:0;left:0;width:1px;height:1px;opacity:0;overflow:hidden;pointer-events:none;';
-
-  input.addEventListener('change', async () => {
-    const files = input.files;
-    // 立即从 DOM 移除，清理现场
-    input.remove();
-    if (!files || files.length === 0) { onDone(); return; }
-
-    await ensureWorkDir();
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
-      const name = file.name.endsWith('.json') ? file.name : file.name + '.json';
-      try {
-        const text = await file.text();
-        JSON.parse(text); // 验证 JSON
-        await Filesystem.writeFile({
-          path: `${WORK_DIR}/${name}`,
-          data: text,
-          directory: Directory.Data,
-        });
-      } catch (e) {
-        console.error('import failed:', name, e);
-      }
+export async function importFilesMobile(files: FileList): Promise<void> {
+  await ensureWorkDir();
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i];
+    const name = file.name.endsWith('.json') ? file.name : file.name + '.json';
+    try {
+      const text = await file.text();
+      JSON.parse(text); // 验证 JSON
+      await Filesystem.writeFile({
+        path: `${WORK_DIR}/${name}`,
+        data: text,
+        directory: Directory.Data,
+      });
+    } catch (e) {
+      console.error('import failed:', name, e);
     }
-    onDone();
-  });
-
-  // 追加到 body 并同步触发选择器（必须在用户手势栈内）
-  document.body.appendChild(input);
-  input.click();
+  }
 }
 
 /**

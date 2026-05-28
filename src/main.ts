@@ -58,26 +58,24 @@ async function main() {
   appEl.appendChild(appShell);
 
   // ===== DEBUG: 红色测试按钮 — 验证文件选择器是否能弹出 =====
-  // 如果此按钮能用，说明问题在设置面板。不能用则说明 WebView 本身有问题。
-  if (isCapacitor() || isHarmonyOS()) {
-    const testLabel = document.createElement('label');
-    testLabel.style.cssText =
-      'position:fixed;bottom:60px;right:10px;z-index:99999;' +
-      'background:#e53e3e;color:#fff;padding:10px 16px;font-size:13px;' +
-      'border-radius:8px;cursor:pointer;font-weight:bold;box-shadow:0 2px 8px rgba(0,0,0,0.3);';
-    testLabel.textContent = 'TEST: 选文件';
-    const testInput = document.createElement('input');
-    testInput.type = 'file';
-    testInput.accept = '.json,application/json';
-    testInput.multiple = true;
-    testInput.style.cssText = 'display:none;';
-    testInput.addEventListener('change', () => {
-      const n = testInput.files?.length ?? 0;
-      alert(`[DEBUG] 选中了 ${n} 个文件`);
-    });
-    testLabel.appendChild(testInput);
-    appShell.appendChild(testLabel);
-  }
+  // 不加平台检测，强制在所有环境显示
+  const testLabel = document.createElement('label');
+  testLabel.style.cssText =
+    'position:fixed;bottom:60px;right:10px;z-index:99999;' +
+    'background:#e53e3e;color:#fff;padding:14px 20px;font-size:15px;' +
+    'border-radius:8px;cursor:pointer;font-weight:bold;box-shadow:0 2px 8px rgba(0,0,0,0.3);';
+  testLabel.textContent = 'TEST: 选文件';
+  const testInput = document.createElement('input');
+  testInput.type = 'file';
+  testInput.accept = '.json,application/json';
+  testInput.multiple = true;
+  testInput.style.cssText = 'position:absolute;width:0;height:0;opacity:0;';
+  testInput.addEventListener('change', () => {
+    const n = testInput.files?.length ?? 0;
+    alert('[DEBUG] 选中了 ' + n + ' 个文件');
+  });
+  testLabel.appendChild(testInput);
+  appShell.appendChild(testLabel);
 
   // 玻璃效果现在通过 CSS 类 .fg-glass 实现，定义在 index.html 中
   // 所有 UI 组件使用 CSS 变量 var(--fg-xxx)，由 applyThemeVars() 统一设置

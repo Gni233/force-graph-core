@@ -13,9 +13,9 @@ import { createSidebar } from './ui-sidebar';
 import { createTabBar } from './ui-tabs';
 import { openFolder, restoreFolder, listFileTree, flatFilePaths, readGraphFile, writeGraphFile, deleteFile, renameFile } from './file-system';
 import { saveFolderHandle, loadFolderHandle, clearFolderHandle } from './folder-store';
-import { isCapacitor, pickJsonFilesMobile, listFilesMobile, readFileMobile, writeFileMobile, deleteFileMobile, downloadApk, downloadReleaseApk, installApk } from './fs-mobile';
+import { isCapacitor, openFilePickerMobile, listFilesMobile, readFileMobile, writeFileMobile, deleteFileMobile, downloadApk, downloadReleaseApk, installApk } from './fs-mobile';
 import { isHarmonyOS } from './utils/platform';
-import { listFilesHarmony, readFileHarmony, writeFileHarmony, deleteFileHarmony, createHarmonyFileImporter } from './fs-harmony';
+import { listFilesHarmony, readFileHarmony, writeFileHarmony, deleteFileHarmony, openFilePickerHarmony } from './fs-harmony';
 import { safePrompt } from './dialog';
 import { checkUpdate, UpdateInfo } from './update-checker';
 import { showUpdateDialog } from './update-dialog';
@@ -233,16 +233,6 @@ async function main() {
   const capApp = isCapacitor();
   const isHarmony = !capApp && isHarmonyOS();
 
-  // 鸿蒙文件导入器（label for+id 关联 input）
-  // Capacitor 下改用原生 FilePicker.pickFiles()，见 onOpenFolder
-  let fileImporterEl: HTMLElement | null = null;
-  if (isHarmony) {
-    // 鸿蒙：使用 localStorage 导入（无需 Capacitor 桥）
-    const { label } = createHarmonyFileImporter(async () => {
-      await refreshFileTree();
-    });
-    fileImporterEl = label;
-  }
 
   // 存储适配器：所有图统一走 localStorage
   const readGraphData = async (fileName: string): Promise<GraphData | null> => {
@@ -1199,19 +1189,18 @@ async function main() {
     getPresets: () => settingPresets,
     onOpenFolder: async () => {
       if (capApp) {
-        // Capacitor: 调起原生 Android 文件选择器（SAF），兼容华为/鸿蒙
+        // Capacitor: 在用户手势上下文中同步创建 input 并 .click()
         fileSystemMountPath = 'graphs';
-        await pickJsonFilesMobile(async () => {
+        openFilePickerMobile(async () => {
           await refreshFileTree();
         });
         return;
       }
       if (isHarmony) {
-        // 鸿蒙无 Capacitor 桥：触发 fileImporter label 的原生点击
-        if (fileImporterEl) {
-          const input = document.getElementById((fileImporterEl as HTMLLabelElement).htmlFor);
-          if (input) input.click();
-        }
+        // 鸿蒙：同步创建 input 并 .click()，存入 localStorage
+        openFilePickerHarmony(async () => {
+          await refreshFileTree();
+        });
         return;
       }
       const ea = (window as any).electronAPI;
@@ -1228,7 +1217,7 @@ async function main() {
       if (h) { await saveFolderHandle(h); fileSystemMountPath = h.name; await refreshFileTree(); }
     },
     getFolderPath: () => fileSystemMountPath || (isHarmony ? 'localStorage' : '（未选择）'),
-    getFileImporter: isHarmony ? () => fileImporterEl : undefined,
+    getFileImporter: undefined, // 所有平台统一用 onOpenFolder → 同步 input.click()
     getAutoUpdate: () => localStorage.getItem('fg-auto-update') === 'true',
     onToggleAutoUpdate: (val) => { localStorage.setItem('fg-auto-update', val ? 'true' : 'false'); },
     onCheckUpdate: async () => {

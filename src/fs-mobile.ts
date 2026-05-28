@@ -3,7 +3,6 @@
  * 使用 @capacitor/filesystem 存储，使用 HTML 文件选择器导入
  */
 import { Filesystem, Directory } from '@capacitor/filesystem';
-import { FilePicker } from '@capawesome/capacitor-file-picker';
 
 const WORK_DIR = 'graphs';
 
@@ -14,27 +13,34 @@ async function ensureWorkDir(): Promise<void> {
 }
 
 /**
- * 通过 Capacitor 原生文件选择器选取 JSON 文件并导入到应用存储。
- * 调用 Android SAF (Storage Access Framework)，兼容华为/鸿蒙 WebView。
- * 读取文件内容的 base64，解码后写入 Capacitor Filesystem。
+ * 在 Capacitor WebView 中打开原生文件选择器。
+ * 核心思路：在用户手势（click）上下文中同步创建 <input type="file">、
+ * 插入 DOM、直接 .click() —— 不依赖 label-for，不依赖 Capacitor 插件。
+ * 这是所有 Android WebView（含华为/鸿蒙）都支持的底层机制。
  */
-export async function pickJsonFilesMobile(onDone: () => void): Promise<void> {
-  try {
-    const result = await FilePicker.pickFiles({
-      types: ['application/json'],
-      limit: 0,      // 无限制多选
-      readData: true, // 直接读取文件内容（base64）
-    });
+export function openFilePickerMobile(onDone: () => void): void {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.json,application/json';
+  input.multiple = true;
+  // opacity:0 + position:absolute（不占空间）但留在视口内，避免某些 WebView 拒绝
+  // 对屏幕外元素调用 .click()
+  input.style.cssText =
+    'position:absolute;top:0;left:0;width:1px;height:1px;opacity:0;overflow:hidden;pointer-events:none;';
+
+  input.addEventListener('change', async () => {
+    const files = input.files;
+    // 立即从 DOM 移除，清理现场
+    input.remove();
+    if (!files || files.length === 0) { onDone(); return; }
 
     await ensureWorkDir();
-    for (const file of result.files) {
-      if (!file.data) continue;
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
       const name = file.name.endsWith('.json') ? file.name : file.name + '.json';
       try {
-        // base64 解码（安全处理 UTF-8）
-        const binary = Uint8Array.from(atob(file.data), c => c.charCodeAt(0));
-        const text = new TextDecoder('utf-8').decode(binary);
-        JSON.parse(text); // 验证 JSON 有效性
+        const text = await file.text();
+        JSON.parse(text); // 验证 JSON
         await Filesystem.writeFile({
           path: `${WORK_DIR}/${name}`,
           data: text,
@@ -44,15 +50,12 @@ export async function pickJsonFilesMobile(onDone: () => void): Promise<void> {
         console.error('import failed:', name, e);
       }
     }
-  } catch (e: any) {
-    // 用户取消或插件不可用 → 静默忽略
-    if (e.message?.includes('cancel') || e.message?.includes('Canceled')) {
-      onDone();
-      return;
-    }
-    console.error('pickFiles error:', e);
-  }
-  onDone();
+    onDone();
+  });
+
+  // 追加到 body 并同步触发选择器（必须在用户手势栈内）
+  document.body.appendChild(input);
+  input.click();
 }
 
 /**

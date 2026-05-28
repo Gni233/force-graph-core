@@ -56,6 +56,40 @@ export async function deleteFileHarmony(fileName: string): Promise<boolean> {
 }
 
 /**
+ * 在鸿蒙 WebView 中打开原生文件选择器。
+ * 同步创建 <input type="file"> 并 .click()，文件存入 localStorage。
+ * 不依赖 label-for，不依赖 Capacitor 插件。
+ */
+export function openFilePickerHarmony(onDone: () => void): void {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.json,application/json';
+  input.multiple = true;
+  input.style.cssText =
+    'position:absolute;top:0;left:0;width:1px;height:1px;opacity:0;overflow:hidden;pointer-events:none;';
+
+  input.addEventListener('change', async () => {
+    const files = input.files;
+    input.remove();
+    if (!files || files.length === 0) { onDone(); return; }
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      const name = file.name.endsWith('.json') ? file.name : file.name + '.json';
+      try {
+        const text = await file.text();
+        localStorage.setItem(storageKey(name), text);
+      } catch (e) {
+        console.error('HarmonyOS import failed:', name, e);
+      }
+    }
+    onDone();
+  });
+
+  document.body.appendChild(input);
+  input.click();
+}
+
+/**
  * 创建文件导入控件（通过 <input type="file"> 导入 JSON 到 localStorage）
  * 返回 { label } 供设置面板显示为"导入文件"按钮
  */

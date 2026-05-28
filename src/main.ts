@@ -420,8 +420,7 @@ async function main() {
     sidebar.updateFileTree(tree, activeTab);
   };
 
-  // ===== 移动端文件导入按钮（固定右下角，label+input，已验证可用）=====
-  if (capApp || isHarmony) {
+  // ===== 文件导入按钮（固定右下角，label+input，已验证可用）=====
     const importLabel = document.createElement('label');
     importLabel.style.cssText =
       'position:fixed;bottom:10px;right:10px;z-index:99999;' +
@@ -458,7 +457,6 @@ async function main() {
     });
     importLabel.appendChild(importInput);
     appShell.appendChild(importLabel);
-  }
 
   // ===== 图加载函数 =====
   async function loadGraphData(fileName: string) {

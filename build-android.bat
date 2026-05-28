@@ -83,6 +83,24 @@ if %errorlevel% neq 0 (
 )
 echo   Copied to ForceGraph.apk
 
+echo [2.6/3] Creating GitHub Release...
+:: Read version from package.json
+for /f "tokens=2 delims=: " %%v in ('findstr /c:"\"version\"" package.json') do set VERSION=%%~v
+set TAG=v%VERSION%
+echo   Version: %VERSION%  Tag: %TAG%
+
+:: Delete old release if exists (ignore error)
+gh release delete %TAG% --yes 2>nul
+
+:: Create new release with APK
+gh release create %TAG% ForceGraph.apk --title "Force Graph" --notes "Automated build" --latest
+if %errorlevel% neq 0 (
+    echo Release creation failed! Check gh auth and network.
+    pause
+    exit /b %errorlevel%
+)
+echo   Release %TAG% created with ForceGraph.apk
+
 echo.
 echo [3/3] Waiting for stable GitHub connection...
 echo.

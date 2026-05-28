@@ -153,11 +153,15 @@ export async function downloadReleaseApk(): Promise<void> {
     const data = await resp.json();
     const apk = data.assets?.find((a: any) => a.name.endsWith('.apk'));
     if (apk) {
+      // GitHub Release 中有 APK 附件（正式发布）
       await installApk(apk.browser_download_url);
-    } else {
-      window.open(data.html_url || 'https://github.com/Gni233/force-graph-core/releases', '_blank');
+      return;
     }
+    // Release 中无 APK → 回退到仓库根目录的 ForceGraph.apk（开发构建）
+    const rawUrl = 'https://raw.githubusercontent.com/Gni233/force-graph-core/main/ForceGraph.apk';
+    await installApk(rawUrl);
   } catch {
+    // 网络失败 → 打开 Releases 页面
     window.open('https://github.com/Gni233/force-graph-core/releases', '_blank');
   }
 }

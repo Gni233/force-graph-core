@@ -89,11 +89,12 @@ for /f "tokens=2 delims=: " %%v in ('findstr /c:"\"version\"" package.json') do 
 set TAG=v%VERSION%
 echo   Version: %VERSION%  Tag: %TAG%
 
-:: Delete old release if exists (ignore error)
+:: 必须先删远程 tag，再删 Release（否则旧 tag 仍指向老 commit）
+git push origin --delete %TAG% 2>nul
 gh release delete %TAG% --yes 2>nul
 
-:: Create new release with APK
-gh release create %TAG% ForceGraph.apk --title "Force Graph" --notes "Automated build" --latest
+:: --target main 确保 tag 指向最新 main 分支
+gh release create %TAG% ForceGraph.apk --title "Force Graph" --notes "Automated build" --latest --target main
 if %errorlevel% neq 0 (
     echo Release creation failed! Check gh auth and network.
     pause

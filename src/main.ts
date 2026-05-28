@@ -236,19 +236,22 @@ async function main() {
 
   // 存储适配器：所有图统一走 localStorage
   const readGraphData = async (fileName: string): Promise<GraphData | null> => {
-    // Capacitor 模式：从应用数据目录读
-    if (capApp && fileSystemMountPath && fileName !== 'demo') {
-      const data = await readFileMobile(fileName);
-      if (data) return data;
+    // 优先 Capacitor Filesystem（不管 isCapacitor 返回值）
+    if (fileSystemMountPath === 'graphs' && fileName !== 'demo') {
+      try {
+        const data = await readFileMobile(fileName);
+        if (data) return data;
+      } catch {}
     }
     // Electron 模式：从挂载目录读文件
-    if (fileSystemMountPath && fileName !== 'demo') {
+    const ea = (window as any).electronAPI;
+    if (ea && fileSystemMountPath && fileSystemMountPath !== 'graphs' && fileName !== 'demo') {
       try {
-        const ea = (window as any).electronAPI;
         const raw = await ea.readFile(fileSystemMountPath + '/' + fileName);
         return raw && !raw.error ? JSON.parse(raw) : null;
-      } catch { /* fall through to localStorage */ }
+      } catch {}
     }
+    // 桌面 FileSystemHandle / localStorage 回退
     const store = createStorage(fileName);
     return await store.readData();
   };
@@ -256,13 +259,14 @@ async function main() {
   const writeGraphData = async (fileName: string, data: GraphData): Promise<void> => {
     const store = createStorage(fileName);
     await store.writeData(data);
-    // Capacitor 模式：写入应用数据目录
-    if (capApp && fileSystemMountPath && fileName !== 'demo') {
-      await writeFileMobile(fileName, data);
+    // 优先 Capacitor Filesystem
+    if (fileSystemMountPath === 'graphs' && fileName !== 'demo') {
+      try { await writeFileMobile(fileName, data); } catch {}
       return;
     }
     // Electron 模式：同步到挂载目录
-    if (fileSystemMountPath && fileName !== 'demo') {
+    const ea = (window as any).electronAPI;
+    if (ea && fileSystemMountPath && fileSystemMountPath !== 'graphs' && fileName !== 'demo') {
       try {
         const ea = (window as any).electronAPI;
         await ea.writeFile(fileSystemMountPath + '/' + fileName, JSON.stringify(data, null, 2));
@@ -294,8 +298,8 @@ async function main() {
     onNewFile: async (path) => {
       const presetSettings = Object.keys(presetDefaults).length > 0 ? { ...DEFAULT_SETTINGS, ...presetDefaults } : { ...DEFAULT_SETTINGS };
       const empty: GraphData = { nodes: [], edges: [], groups: [], settings: presetSettings };
-      if (capApp) {
-        await writeFileMobile(path, empty);
+      if (fileSystemMountPath === 'graphs') {
+        try { await writeFileMobile(path, empty); } catch {}
       } else if (isHarmony) {
         await writeFileHarmony(path, empty);
       } else {
@@ -305,7 +309,7 @@ async function main() {
       await openTab(path);
     },
     onDeleteFile: async (path) => {
-      if (capApp) { await deleteFileMobile(path); }
+      if (fileSystemMountPath === 'graphs') { try { await deleteFileMobile(path); } catch {} }
       else if (isHarmony) { await deleteFileHarmony(path); }
       else { await deleteFile(path); }
       openTabs = openTabs.filter(t => t !== path);
@@ -319,10 +323,12 @@ async function main() {
     },
     onRenameFile: async (oldPath, newName) => {
       const newPath = newName.endsWith('.json') ? newName : newName + '.json';
-      if (capApp) {
-        const content = await readFileMobile(oldPath);
-        await writeFileMobile(newPath, content || { nodes: [], edges: [], groups: [] });
-        await deleteFileMobile(oldPath);
+      if (fileSystemMountPath === 'graphs') {
+        try {
+          const content = await readFileMobile(oldPath);
+          await writeFileMobile(newPath, content || { nodes: [], edges: [], groups: [] });
+          await deleteFileMobile(oldPath);
+        } catch {}
       } else if (isHarmony) {
         const content = await readFileHarmony(oldPath);
         await writeFileHarmony(newPath, content || { nodes: [], edges: [], groups: [], settings: { ...DEFAULT_SETTINGS } });
@@ -338,13 +344,14 @@ async function main() {
       }
       await refreshFileTree();
     },
-    onOpenFolder: () => {}, // 已迁移到设置面板
     onCopyFile: async (path) => {
       const base = path.replace(/\.json$/, '');
       let n = 2; let newPath = base + ' ' + n + '.json';
-      if (capApp) {
-        const files = await listFilesMobile();
-        while (files.some(f => f.name === newPath)) { n++; newPath = base + ' ' + n + '.json'; }
+      if (fileSystemMountPath === 'graphs') {
+        try {
+          const files = await listFilesMobile();
+          while (files.some(f => f.name === newPath)) { n++; newPath = base + ' ' + n + '.json'; }
+        } catch {}
       } else if (isHarmony) {
         const files = await listFilesHarmony();
         while (files.some(f => f.name === newPath)) { n++; newPath = base + ' ' + n + '.json'; }
@@ -356,8 +363,7 @@ async function main() {
       await refreshFileTree();
     },
     onNewFolder: async (_path) => {
-      // Capacitor / 鸿蒙 没有子目录概念，跳过
-      if (!capApp && !isHarmony) {
+      if (!isHarmony && fileSystemMountPath !== 'graphs') {
         await writeGraphFile(_path + '/.gitkeep', { nodes: [], edges: [], groups: [], settings: { ...DEFAULT_SETTINGS } });
         await deleteFile(_path + '/.gitkeep');
       }
@@ -368,7 +374,7 @@ async function main() {
       const dstPath = dstDir + '/' + name;
       const content = await readGraphData(src);
       await writeGraphData(dstPath, content || { nodes: [], edges: [], groups: [] });
-      if (capApp) { await deleteFileMobile(src); }
+      if (fileSystemMountPath === 'graphs') { try { await deleteFileMobile(src); } catch {} }
       else if (isHarmony) { await deleteFileHarmony(src); }
       else { await deleteFile(src); }
       if (activeTab === src) { await loadGraphData(dstPath); }
@@ -376,6 +382,7 @@ async function main() {
     },
     onApplyPreset: () => { settingsPanel.show(); },
     onResetPresets: () => { settingsPanel.show(); },
+    onOpenFolder: () => {},
   });
 
   // 侧边栏玻璃效果
@@ -383,23 +390,21 @@ async function main() {
   sidebar.sidebar.style.cssText = `position:absolute;left:${SIDEBAR_LEFT}px;top:6px;bottom:6px;z-index:${Z_FLOATING_UI};width:${getResponsiveSidebarWidth()}px;min-width:${SIDEBAR_MIN_WIDTH}px;display:flex;flex-direction:column;font-size:${V('--fg-font-md', '0.85em')};overflow:hidden;`;
 
   const refreshFileTree = async () => {
-    // Capacitor 模式：从应用数据目录列出文件
-    if (capApp && fileSystemMountPath) {
-      const files = await listFilesMobile();
-      sidebar.updateFileTree(files, activeTab);
-      return;
+    // 优先 Capacitor Filesystem（无论 isCapacitor 返回值，APK 自带的插件）
+    if (fileSystemMountPath === 'graphs') {
+      try {
+        const files = await listFilesMobile();
+        if (files.length > 0 || !isHarmony || isHarmonyOS()) {
+          sidebar.updateFileTree(files, activeTab);
+          return;
+        }
+      } catch {}
     }
-    // 鸿蒙模式：从 localStorage 列出文件
-    if (isHarmony) {
+    // 鸿蒙 localStorage 回退
+    if (isHarmony || (!capApp && !(window as any).electronAPI)) {
       const files = await listFilesHarmony();
-      sidebar.updateFileTree(files, activeTab);
-      return;
-    }
-    // 非 Capacitor/鸿蒙但可能有 localStorage 文件（浏览器回退存储）
-    if (!capApp && !isHarmony) {
-      const harmonyFiles = await listFilesHarmony();
-      if (harmonyFiles.length > 0) {
-        sidebar.updateFileTree(harmonyFiles, activeTab);
+      if (files.length > 0) {
+        sidebar.updateFileTree(files, activeTab);
         return;
       }
     }
@@ -483,10 +488,11 @@ async function main() {
       const files = fabInput.files;
       if (!files || files.length === 0) return;
       try {
-        if (capApp) {
+        // 优先 Capacitor Filesystem（APK 自带，不管 isCapacitor 返回值）
+        try {
           await importFilesMobile(files);
           fileSystemMountPath = 'graphs';
-        } else {
+        } catch {
           await importFilesHarmony(files);
         }
         await refreshFileTree();
@@ -1301,18 +1307,11 @@ async function main() {
       showUpdateDialog(info, () => {
         const asset = info.assets.find(a => a.name.endsWith('.apk'));
         const dlUrl = asset?.downloadUrl || info.htmlUrl;
-        if (capApp) { installApk(dlUrl); }
-        else { window.open(dlUrl, '_blank'); }
+        installApk(dlUrl);
       });
     },
     onDownloadInstall: () => {
-      const url = 'https://github.com/Gni233/force-graph-core/releases/latest';
-      if (capApp) { downloadReleaseApk(); }
-      else {
-        const ea = (window as any).electronAPI;
-        if (ea?.openExternal) { ea.openExternal(url); }
-        else { window.open(url, '_blank'); }
-      }
+      downloadReleaseApk();
     },
   });
 
@@ -2266,32 +2265,22 @@ async function main() {
   renderAllTabs();
 
   // 尝试恢复文件夹
-  // Capacitor 模式：始终尝试恢复应用数据目录
-  if (capApp) {
-    fileSystemMountPath = 'graphs';
-    await refreshFileTree();
-  } else if (isHarmony) {
-    // 鸿蒙模式：无物理文件夹，从 localStorage 列出文件
-    await refreshFileTree();
+  fileSystemMountPath = 'graphs';
+  await refreshFileTree();
+  // Electron / 桌面模式：有额外文件夹恢复路径
+  const ea2 = (window as any).electronAPI;
+  if (ea2) {
+    const config = await ea2.configRead();
+    const savedPath = config.folderPath;
+    if (savedPath && await ea2.exists(savedPath)) {
+      fileSystemMountPath = savedPath;
+      await refreshFileTree();
+    }
   } else {
-    // Electron 模式：从 userData/config.json 读路径
-    const ea2 = (window as any).electronAPI;
-    if (ea2) {
-      const config = await ea2.configRead();
-      const savedPath = config.folderPath;
-      if (savedPath && await ea2.exists(savedPath)) {
-        fileSystemMountPath = savedPath;
-        await refreshFileTree();
-      }
-    } else {
-      const savedHandle = await loadFolderHandle();
-      if (savedHandle) {
-        const ok = await restoreFolder(savedHandle);
-        if (ok) { await refreshFileTree(); }
-      } else {
-        // 无保存句柄→尝试 localStorage 回退（移动端浏览器导入的文件）
-        await refreshFileTree();
-      }
+    const savedHandle = await loadFolderHandle();
+    if (savedHandle) {
+      const ok = await restoreFolder(savedHandle);
+      if (ok) { await refreshFileTree(); }
     }
   }
 

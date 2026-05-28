@@ -3,6 +3,7 @@
  * 使用 @capacitor/filesystem 存储，使用 HTML 文件选择器导入
  */
 import { Filesystem, Directory } from '@capacitor/filesystem';
+import { FilePicker } from '@capawesome/capacitor-file-picker';
 
 const WORK_DIR = 'graphs';
 
@@ -13,7 +14,49 @@ async function ensureWorkDir(): Promise<void> {
 }
 
 /**
- * 创建文件导入控件。
+ * 通过 Capacitor 原生文件选择器选取 JSON 文件并导入到应用存储。
+ * 调用 Android SAF (Storage Access Framework)，兼容华为/鸿蒙 WebView。
+ * 读取文件内容的 base64，解码后写入 Capacitor Filesystem。
+ */
+export async function pickJsonFilesMobile(onDone: () => void): Promise<void> {
+  try {
+    const result = await FilePicker.pickFiles({
+      types: ['application/json'],
+      limit: 0,      // 无限制多选
+      readData: true, // 直接读取文件内容（base64）
+    });
+
+    await ensureWorkDir();
+    for (const file of result.files) {
+      if (!file.data) continue;
+      const name = file.name.endsWith('.json') ? file.name : file.name + '.json';
+      try {
+        // base64 解码（安全处理 UTF-8）
+        const binary = Uint8Array.from(atob(file.data), c => c.charCodeAt(0));
+        const text = new TextDecoder('utf-8').decode(binary);
+        JSON.parse(text); // 验证 JSON 有效性
+        await Filesystem.writeFile({
+          path: `${WORK_DIR}/${name}`,
+          data: text,
+          directory: Directory.Data,
+        });
+      } catch (e) {
+        console.error('import failed:', name, e);
+      }
+    }
+  } catch (e: any) {
+    // 用户取消或插件不可用 → 静默忽略
+    if (e.message?.includes('cancel') || e.message?.includes('Canceled')) {
+      onDone();
+      return;
+    }
+    console.error('pickFiles error:', e);
+  }
+  onDone();
+}
+
+/**
+ * 创建文件导入控件（HTML fallback，用于鸿蒙等无 Capacitor 桥环境）。
  * 返回 { label, input } 两个元素：
  * - input 是隐藏的 <input type="file"> 加到 body
  * - label 是用 for+id 关联的可见按钮
@@ -34,6 +77,13 @@ export function createFileImporter(onDone: () => void): { label: HTMLElement; in
 
   // input 必须挂到 DOM 中（文件选择器要求）
   document.body.appendChild(input);
+
+  // 兜底：部分 WebView 不支持 label-for 触发隐藏 input
+  // 加 pointerdown 直接调 input.click()（用户手势上下文内有效）
+  label.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    input.click();
+  });
 
   input.addEventListener('change', async () => {
     const files = input.files;

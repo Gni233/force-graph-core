@@ -75,6 +75,13 @@ export function createHarmonyFileImporter(onDone: () => void): { label: HTMLElem
 
   document.body.appendChild(input);
 
+  // 兜底：部分 WebView 不支持 label-for 触发隐藏 input
+  // 加 pointerdown 直接调 input.click()（用户手势上下文内有效）
+  label.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    input.click();
+  });
+
   input.addEventListener('change', async () => {
     const files = input.files;
     if (!files || files.length === 0) { onDone(); return; }

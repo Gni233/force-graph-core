@@ -57,26 +57,6 @@ async function main() {
   appShell.style.cssText = 'position:relative;width:100vw;height:100vh;overflow:hidden;';
   appEl.appendChild(appShell);
 
-  // ===== DEBUG: 红色测试按钮 — 验证文件选择器是否能弹出 =====
-  // 不加平台检测，强制在所有环境显示
-  const testLabel = document.createElement('label');
-  testLabel.style.cssText =
-    'position:fixed;bottom:60px;right:10px;z-index:99999;' +
-    'background:#e53e3e;color:#fff;padding:14px 20px;font-size:15px;' +
-    'border-radius:8px;cursor:pointer;font-weight:bold;box-shadow:0 2px 8px rgba(0,0,0,0.3);';
-  testLabel.textContent = 'TEST: 选文件';
-  const testInput = document.createElement('input');
-  testInput.type = 'file';
-  testInput.accept = '.json,application/json';
-  testInput.multiple = true;
-  testInput.style.cssText = 'position:absolute;width:0;height:0;opacity:0;';
-  testInput.addEventListener('change', () => {
-    const n = testInput.files?.length ?? 0;
-    alert('[DEBUG] 选中了 ' + n + ' 个文件');
-  });
-  testLabel.appendChild(testInput);
-  appShell.appendChild(testLabel);
-
   // 玻璃效果现在通过 CSS 类 .fg-glass 实现，定义在 index.html 中
   // 所有 UI 组件使用 CSS 变量 var(--fg-xxx)，由 applyThemeVars() 统一设置
 
@@ -439,6 +419,44 @@ async function main() {
     const tree = await listFileTree();
     sidebar.updateFileTree(tree, activeTab);
   };
+
+  // ===== 移动端文件导入按钮（固定右下角，label+input，已验证可用）=====
+  if (capApp || isHarmony) {
+    const importLabel = document.createElement('label');
+    importLabel.style.cssText =
+      'position:fixed;bottom:10px;right:10px;z-index:99999;' +
+      'display:inline-flex;align-items:center;gap:4px;' +
+      `background:${V('--fg-accent','#5B8FF9')};color:#fff;` +
+      'padding:10px 16px;font-size:14px;font-weight:bold;' +
+      'border-radius:8px;cursor:pointer;' +
+      'box-shadow:0 2px 12px rgba(0,0,0,0.3);';
+    importLabel.textContent = '导入 JSON';
+    const importInput = document.createElement('input');
+    importInput.type = 'file';
+    importInput.accept = '.json,application/json';
+    importInput.multiple = true;
+    importInput.style.cssText = 'position:absolute;width:0;height:0;opacity:0;';
+    importInput.addEventListener('change', async () => {
+      const files = importInput.files;
+      if (!files || files.length === 0) return;
+      try {
+        if (capApp) {
+          await importFilesMobile(files);
+          fileSystemMountPath = 'graphs';
+        } else {
+          await importFilesHarmony(files);
+        }
+        await refreshFileTree();
+        importInput.value = '';
+        showToast(`已导入 ${files.length} 个文件`, 'success');
+      } catch (e) {
+        console.error('import error:', e);
+        showToast('导入失败', 'error');
+      }
+    });
+    importLabel.appendChild(importInput);
+    appShell.appendChild(importLabel);
+  }
 
   // ===== 图加载函数 =====
   async function loadGraphData(fileName: string) {

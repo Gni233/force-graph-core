@@ -155,18 +155,41 @@ export async function installApk(url: string): Promise<void> {
   downloadApk(url);
 }
 
-/** 下载 APK — 使用直接 URL + <a download>，兼容华为/鸿蒙 WebView */
+/** 下载 APK — fetch + Filesystem 写入，应用内下载 */
 export async function downloadApk(url: string): Promise<void> {
-  // 方案：直接用原始 URL + <a download>，不走 blob（华为 WebView 不支持 blob 下载）
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = 'force-graph-update.apk';
-  a.target = '_blank';
-  a.rel = 'noopener';
-  a.style.display = 'none';
-  document.body.appendChild(a);
-  a.click();
-  setTimeout(() => document.body.removeChild(a), 1000);
+  try {
+    // 方案：fetch → ArrayBuffer → base64 → Filesystem 写入
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const buf = await resp.arrayBuffer();
+    const bytes = new Uint8Array(buf);
+    // 手动 base64 编码（不用 btoa，大文件会导致栈溢出）
+    let base64 = '';
+    const chunk = 8192;
+    for (let i = 0; i < bytes.length; i += chunk) {
+      const slice = bytes.subarray(i, i + chunk);
+      base64 += String.fromCharCode.apply(null, Array.from(slice));
+    }
+    base64 = btoa(base64);
+    await ensureWorkDir();
+    await Filesystem.writeFile({
+      path: `${WORK_DIR}/force-graph-update.apk`,
+      data: base64,
+      directory: Directory.Data,
+    });
+    // 尝试安装
+    const plugin = (window as any).Capacitor?.Plugins?.ApkInstaller;
+    if (plugin) {
+      await plugin.downloadAndInstall({ url, fileName: 'force-graph-update.apk' });
+    } else {
+      // 无原生安装插件 → 让用户手动安装
+      alert('APK 已下载到应用存储中，请用文件管理器找到并安装');
+    }
+  } catch (e) {
+    console.error('Download failed:', e);
+    // 最终回退：打开浏览器
+    window.open(url, '_blank');
+  }
 }
 
 /** 下载最新 Release 的 APK 并安装 */

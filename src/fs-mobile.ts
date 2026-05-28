@@ -200,39 +200,49 @@ export async function installApk(url: string): Promise<void> {
   downloadApk(url);
 }
 
-/** 下载 APK — fetch + Filesystem 写入，应用内下载 */
+/** 下载 APK 到外部存储并尝试安装 */
 export async function downloadApk(url: string): Promise<void> {
   try {
-    // 方案：fetch → ArrayBuffer → base64 → Filesystem 写入
     const resp = await fetch(url);
     if (!resp.ok) throw new Error('HTTP ' + resp.status);
     const buf = await resp.arrayBuffer();
     const bytes = new Uint8Array(buf);
-    // 手动 base64 编码（不用 btoa，大文件会导致栈溢出）
+
     let base64 = '';
-    const chunk = 8192;
-    for (let i = 0; i < bytes.length; i += chunk) {
-      const slice = bytes.subarray(i, i + chunk);
+    const CHUNK = 8192;
+    for (let i = 0; i < bytes.length; i += CHUNK) {
+      const slice = bytes.subarray(i, i + CHUNK);
       base64 += String.fromCharCode.apply(null, Array.from(slice));
     }
     base64 = btoa(base64);
+
+    // 保存到应用外部存储目录
     await ensureWorkDir();
+    const fileName = 'force-graph-update.apk';
     await Filesystem.writeFile({
-      path: `${WORK_DIR}/force-graph-update.apk`,
+      path: `${WORK_DIR}/${fileName}`,
       data: base64,
-      directory: Directory.Data,
+      directory: Directory.ExternalStorage,
+    }).catch(() => {
+      // ExternalStorage 可能不可用 → 回退 Data 目录
+      return Filesystem.writeFile({
+        path: `${WORK_DIR}/${fileName}`,
+        data: base64,
+        directory: Directory.Data,
+      });
     });
-    // 尝试安装
+
+    // 尝试原生安装
     const plugin = (window as any).Capacitor?.Plugins?.ApkInstaller;
     if (plugin) {
-      await plugin.downloadAndInstall({ url, fileName: 'force-graph-update.apk' });
-    } else {
-      // 无原生安装插件 → 让用户手动安装
-      alert('APK 已下载到应用存储中，请用文件管理器找到并安装');
+      await plugin.downloadAndInstall({ url, fileName });
+      return;
     }
+
+    // 回退：用下载 URL 在本窗口打开（WebView 会尝试下载/安装）
+    window.open(url, '_self');
   } catch (e) {
     console.error('Download failed:', e);
-    // 最终回退：打开浏览器
     window.open(url, '_blank');
   }
 }

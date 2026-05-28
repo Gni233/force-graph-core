@@ -432,6 +432,23 @@ async function main() {
     fabBtn.textContent = '选择目录';
 
     const doPickDir = async () => {
+      // 方式1：Web File System Access API（showDirectoryPicker）
+      // Chrome/WebView 86+ 支持，选择后持久化，可读可写 —— 和桌面版一样
+      if ('showDirectoryPicker' in window) {
+        try {
+          const h = await openFolder();
+          if (h) {
+            await saveFolderHandle(h);
+            fileSystemMountPath = h.name;
+            await refreshFileTree();
+            showToast(`已打开目录: ${h.name}`, 'success');
+            return;
+          }
+        } catch (e: any) {
+          if (e.name === 'AbortError') return;
+        }
+      }
+      // 方式2：Capacitor 原生 SAF 目录选择器
       try {
         const count = await pickDirectoryAndImport();
         if (count > 0) {
@@ -440,10 +457,15 @@ async function main() {
           showToast(`已导入 ${count} 个文件`, 'success');
           return;
         }
+        if (count === -1) {
+          showToast('目录无法直接读取，请选择文件导入', 'warning');
+          fabInput.click();
+          return;
+        }
       } catch (e: any) {
         if (e.message?.includes('cancel') || e.message?.includes('Canceled')) return;
       }
-      // 原生目录选择失败 → 回退文件选择器
+      // 方式3：回退 HTML 文件选择器
       fabInput.click();
     };
     fabBtn.addEventListener('pointerdown', (e) => { e.preventDefault(); doPickDir(); });

@@ -498,7 +498,23 @@ async function main() {
       'padding:10px 16px;font-size:14px;font-weight:bold;' +
       'border:none;border-radius:8px;cursor:pointer;' +
       'box-shadow:0 2px 12px rgba(0,0,0,0.3);';
-    fabBtn.onclick = () => triggerFileImport();
+    fabBtn.onclick = async () => {
+      // 优先 SAF 目录选择器
+      const c = (window as any).Capacitor;
+      if (c?.Plugins?.SafPlugin) {
+        try {
+          const dir = await safPickDirectory();
+          if (dir) {
+            fileSystemMountPath = dir.name;
+            await refreshFileTree();
+            showToast(`已打开: ${dir.name}`, 'success');
+            return;
+          }
+        } catch {}
+      }
+      // 回退文件导入
+      triggerFileImport();
+    };
     appShell.appendChild(fabBtn);
 
   // ===== 图加载函数 =====
@@ -1268,26 +1284,24 @@ async function main() {
       settingsUI.updateInfo(); scheduleSave(); simManager.initSim(); draw();
     },
     getPresets: () => settingPresets,
-    onImportFiles: (capApp || isHarmony) ? async (files: FileList) => {
-      if (capApp) {
-        await importFilesMobile(files);
-        fileSystemMountPath = 'graphs';
-      } else {
-        await importFilesHarmony(files);
-      }
-      await refreshFileTree();
-    } : undefined,
     onOpenFolder: async () => {
       // 1. Android SAF 原生目录选择器（Obsidian 式）
-      if (safIsAvailable()) {
-        const dir = await safPickDirectory();
-        if (dir) {
-          fileSystemMountPath = dir.name;
-          await refreshFileTree();
-          showToast(`已打开: ${dir.name}`, 'success');
+      const cap = (window as any).Capacitor;
+      if (cap?.Plugins?.SafPlugin) {
+        try {
+          const dir = await safPickDirectory();
+          if (dir) {
+            fileSystemMountPath = dir.name;
+            await refreshFileTree();
+            showToast(`已打开: ${dir.name}`, 'success');
+            return;
+          }
+        } catch (e: any) {
+          showToast('SAF 错误: ' + (e.message || '未知'), 'error');
           return;
         }
-        // SAF 失败或取消 → 跳过，继续尝试后面的方式（不要 return）
+        showToast('已取消目录选择', 'warning');
+        return;
       }
       // 2. 桌面 Electron
       const ea = (window as any).electronAPI;
@@ -1301,20 +1315,16 @@ async function main() {
         }
       }
       // 3. Web File System Access API (showDirectoryPicker)
-      if ('showDirectoryPicker' in window) {
-        try {
-          const h = await openFolder();
-          if (h) {
-            await saveFolderHandle(h);
-            fileSystemMountPath = h.name;
-            await refreshFileTree();
-            return;
-          }
-        } catch {}
-        // showDirectoryPicker 存在但失败 → 不回退，因为这个 WebView
-        // 的 input[type=file] 用同步 click() 最可靠
-      }
-      // 4. 兜底：同步创建 input 并 click（所有 WebView 都支持）
+      try {
+        const h = await openFolder();
+        if (h) {
+          await saveFolderHandle(h);
+          fileSystemMountPath = h.name;
+          await refreshFileTree();
+          return;
+        }
+      } catch {}
+      // 4. 兜底：同步创建 input 并 click
       triggerFileImport();
     },
     getFolderPath: () => fileSystemMountPath || '（未选择）',
@@ -2283,6 +2293,17 @@ async function main() {
     activeTab = 'demo';
   }
   renderAllTabs();
+
+  // 诊断：显示可用的存储后端
+  const cap = (window as any).Capacitor;
+  const diag = [
+    'isNative=' + (cap?.isNative?.() ?? 'N/A'),
+    'hasSafPlugin=' + !!cap?.Plugins?.SafPlugin,
+    'hasFilesystem=' + !!cap?.Plugins?.Filesystem,
+    'showDirPicker=' + ('showDirectoryPicker' in window),
+    'isHarmonyOS=' + isHarmonyOS(),
+  ].join(', ');
+  console.log('[DIAG]', diag);
 
   // 尝试恢复文件夹（优先级: SAF > showDirectoryPicker > Capacitor > localStorage）
   const safDir = safIsAvailable() ? await safRestoreDirectory() : null;

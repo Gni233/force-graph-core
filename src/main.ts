@@ -489,34 +489,6 @@ async function main() {
     input.click();
   };
 
-  // ===== 文件夹/文件导入按钮 =====
-    const fabBtn = document.createElement('button');
-    fabBtn.textContent = '导入 JSON';
-    fabBtn.style.cssText =
-      'position:fixed;bottom:10px;right:10px;z-index:99999;' +
-      `background:${V('--fg-accent','#5B8FF9')};color:#fff;` +
-      'padding:10px 16px;font-size:14px;font-weight:bold;' +
-      'border:none;border-radius:8px;cursor:pointer;' +
-      'box-shadow:0 2px 12px rgba(0,0,0,0.3);';
-    fabBtn.onclick = async () => {
-      // 优先 SAF 目录选择器
-      const c = (window as any).Capacitor;
-      if (c?.Plugins?.SafPlugin) {
-        try {
-          const dir = await safPickDirectory();
-          if (dir) {
-            fileSystemMountPath = dir.name;
-            await refreshFileTree();
-            showToast(`已打开: ${dir.name}`, 'success');
-            return;
-          }
-        } catch {}
-      }
-      // 回退文件导入
-      triggerFileImport();
-    };
-    appShell.appendChild(fabBtn);
-
   // ===== 图加载函数 =====
   async function loadGraphData(fileName: string) {
     loadingOverlay.style.display = 'flex';
@@ -2293,17 +2265,6 @@ async function main() {
     activeTab = 'demo';
   }
   renderAllTabs();
-
-  // 诊断：显示可用的存储后端
-  const cap = (window as any).Capacitor;
-  const diag = [
-    'isNative=' + (cap?.isNative?.() ?? 'N/A'),
-    'hasSafPlugin=' + !!cap?.Plugins?.SafPlugin,
-    'hasFilesystem=' + !!cap?.Plugins?.Filesystem,
-    'showDirPicker=' + ('showDirectoryPicker' in window),
-    'isHarmonyOS=' + isHarmonyOS(),
-  ].join(', ');
-  console.log('[DIAG]', diag);
 
   // 尝试恢复文件夹（优先级: SAF > showDirectoryPicker > Capacitor > localStorage）
   const safDir = safIsAvailable() ? await safRestoreDirectory() : null;

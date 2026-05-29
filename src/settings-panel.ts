@@ -164,6 +164,9 @@ export function createSettingsPanel(
   presetSection.appendChild(presetRow);
   panel.appendChild(presetSection);
 
+  // 路径标签（需要跨作用域访问，提前声明）
+  let pathLabel: HTMLSpanElement | null = null;
+
   // 目录选择
   if (callbacks.onOpenFolder) {
     const folderSection = document.createElement('div');
@@ -171,7 +174,7 @@ export function createSettingsPanel(
       `margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid ${V('--fg-border-light', 'rgba(255,255,255,0.08)')};`;
     const folderRow = document.createElement('div');
     folderRow.style.cssText = 'display:flex;align-items:center;gap:6px;';
-    const pathLabel = document.createElement('span');
+    pathLabel = document.createElement('span');
     pathLabel.style.cssText =
       `font-size:${V('--fg-font-xs', '0.72em')};opacity:0.5;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;` +
       `color:${V('--fg-text-muted', '')};`;
@@ -210,7 +213,7 @@ export function createSettingsPanel(
         if (!files || files.length === 0) return;
         await callbacks.onImportFiles?.(files);
         fileInput.value = '';
-        pathLabel.textContent = callbacks.getFolderPath?.() || '（未选择）';
+        if (pathLabel) pathLabel.textContent = callbacks.getFolderPath?.() || '（未选择）';
       });
 
       openBtn.appendChild(fileInput);
@@ -226,7 +229,7 @@ export function createSettingsPanel(
         `border-radius:${V('--fg-radius-sm', '4px')};`;
       openBtn.onclick = async () => {
         await callbacks.onOpenFolder?.();
-        pathLabel.textContent = callbacks.getFolderPath?.() || '（未选择）';
+        if (pathLabel) pathLabel.textContent = callbacks.getFolderPath?.() || '（未选择）';
       };
       folderRow.appendChild(openBtn);
     }
@@ -280,7 +283,13 @@ export function createSettingsPanel(
   parent.appendChild(panel);
 
   return {
-    show: () => { panel.style.display = 'block'; renderPresets(); },
+    show: () => {
+      panel.style.display = 'block';
+      renderPresets();
+      if (pathLabel) {
+        pathLabel.textContent = callbacks.getFolderPath?.() || '（未选择）';
+      }
+    },
     hide: () => { panel.style.display = 'none'; },
     updateInfo: () => { renderPresets(); },
   };

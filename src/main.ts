@@ -434,77 +434,41 @@ async function main() {
     sidebar.updateFileTree(tree, activeTab);
   };
 
-  // ===== 文件夹/文件导入按钮 =====
-    const fabBtn = document.createElement('label');
-    fabBtn.style.cssText =
-      'position:fixed;bottom:10px;right:10px;z-index:99999;' +
-      'display:inline-flex;align-items:center;gap:4px;' +
-      `background:${V('--fg-accent','#5B8FF9')};color:#fff;` +
-      'padding:10px 16px;font-size:14px;font-weight:bold;' +
-      'border-radius:8px;cursor:pointer;' +
-      'box-shadow:0 2px 12px rgba(0,0,0,0.3);';
-    fabBtn.textContent = '选择目录';
-
-    const doPickDir = async () => {
-      // 方式1：Web File System Access API（持久化，可读写，桌面/现代Chrome WebView）
-      if ('showDirectoryPicker' in window) {
-        try {
-          const h = await openFolder();
-          if (h) {
-            await saveFolderHandle(h);
-            fileSystemMountPath = h.name;
-            await refreshFileTree();
-            showToast(`已打开: ${h.name}`, 'success');
-            return;
-          }
-        } catch (e: any) {
-          if (e.name === 'AbortError') return;
-        }
-      }
-      // 方式2：Capacitor 原生 SAF 选目录
-      if (capApp) {
-        try {
-          const count = await pickDirectoryAndImport();
-          if (count > 0) {
-            fileSystemMountPath = 'graphs';
-            await refreshFileTree();
-            showToast(`已导入 ${count} 个文件`, 'success');
-            return;
-          }
-        } catch (e: any) {
-          if (e.message?.includes('cancel') || e.message?.includes('Canceled')) return;
-        }
-      }
-      // 方式3：直接文件选择器（最可靠）
-      fabInput.click();
-    };
-    fabBtn.addEventListener('pointerdown', (e) => { e.preventDefault(); doPickDir(); });
-
-    const fabInput = document.createElement('input');
-    fabInput.type = 'file';
-    fabInput.accept = '.json,application/json';
-    fabInput.multiple = true;
-    fabInput.style.cssText = 'position:absolute;width:0;height:0;opacity:0;';
-    fabInput.addEventListener('change', async () => {
-      const files = fabInput.files;
+  // 共享的文件导入逻辑（FAB 按钮 + 设置面板"打开目录"共用）
+  const triggerFileImport = () => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.json,application/json';
+    input.multiple = true;
+    input.style.cssText = 'position:absolute;top:0;left:0;width:1px;height:1px;opacity:0;pointer-events:none;';
+    input.addEventListener('change', async () => {
+      const files = input.files;
+      input.remove();
       if (!files || files.length === 0) return;
       try {
-        // 优先 Capacitor Filesystem（APK 自带，不管 isCapacitor 返回值）
-        try {
-          await importFilesMobile(files);
-          fileSystemMountPath = 'graphs';
-        } catch {
-          await importFilesHarmony(files);
-        }
+        try { await importFilesMobile(files); } catch { await importFilesHarmony(files); }
+        fileSystemMountPath = 'graphs';
         await refreshFileTree();
-        fabInput.value = '';
         showToast(`已导入 ${files.length} 个文件`, 'success');
       } catch (e) {
         console.error('import error:', e);
         showToast('导入失败', 'error');
       }
     });
-    fabBtn.appendChild(fabInput);
+    document.body.appendChild(input);
+    input.click();
+  };
+
+  // ===== 文件夹/文件导入按钮 =====
+    const fabBtn = document.createElement('button');
+    fabBtn.textContent = '导入 JSON';
+    fabBtn.style.cssText =
+      'position:fixed;bottom:10px;right:10px;z-index:99999;' +
+      `background:${V('--fg-accent','#5B8FF9')};color:#fff;` +
+      'padding:10px 16px;font-size:14px;font-weight:bold;' +
+      'border:none;border-radius:8px;cursor:pointer;' +
+      'box-shadow:0 2px 12px rgba(0,0,0,0.3);';
+    fabBtn.onclick = () => triggerFileImport();
     appShell.appendChild(fabBtn);
 
   // ===== 图加载函数 =====
@@ -1284,7 +1248,7 @@ async function main() {
       await refreshFileTree();
     } : undefined,
     onOpenFolder: async () => {
-      // 桌面端：Electron IPC 或浏览器 showDirectoryPicker
+      // 桌面 Electron
       const ea = (window as any).electronAPI;
       if (ea?.openFolder) {
         const folderPath = await ea.openFolder();
@@ -1295,8 +1259,20 @@ async function main() {
         }
         return;
       }
-      const h = await openFolder();
-      if (h) { await saveFolderHandle(h); fileSystemMountPath = h.name; await refreshFileTree(); }
+      // Web File System Access API (showDirectoryPicker)
+      if ('showDirectoryPicker' in window) {
+        try {
+          const h = await openFolder();
+          if (h) {
+            await saveFolderHandle(h);
+            fileSystemMountPath = h.name;
+            await refreshFileTree();
+          }
+        } catch {}
+        return;
+      }
+      // Capacitor/移动端：调用文件选择器导入，存入 graphs/ 目录
+      triggerFileImport();
     },
     getFolderPath: () => fileSystemMountPath || '（未选择）',
     getFileImporter: undefined, // 所有平台统一用 onOpenFolder → 同步 input.click()

@@ -86,7 +86,7 @@ export function createSidebar(
       mi.onclick = () => { it.action(); menu.remove(); cleanup(); };
       menu.appendChild(mi);
     });
-    parent.appendChild(menu);
+    document.body.appendChild(menu);
     const close = (ev: Event) => { if (!menu.contains(ev.target as Node)) { menu.remove(); cleanup(); } };
     const cleanup = () => { document.removeEventListener('pointerdown', closePtr); };
     const closePtr = close as EventListener;

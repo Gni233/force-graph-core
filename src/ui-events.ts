@@ -5,6 +5,7 @@ import { sharedState } from "./shared-state";
 import { Z_TOOLTIP } from "./layout-constants";
 
 const DRAG_THRESHOLD = 3;
+const LONG_PRESS_MOVE_TOLERANCE = 10;
 const LONG_PRESS_DURATION = 500;
 
 export interface EventsContext {
@@ -244,19 +245,18 @@ export function setupCanvasEvents(
     if (!e.touches[0]) return;
     const touch = e.touches[0];
     const [mx, my] = toWorldPos({ clientX: touch.clientX, clientY: touch.clientY });
-    if (downPoint && Math.hypot(mx - downPoint[0], my - downPoint[1]) >= DRAG_THRESHOLD) clearLongPress();
+    if (downPoint && Math.hypot(mx - downPoint[0], my - downPoint[1]) >= LONG_PRESS_MOVE_TOLERANCE) clearLongPress();
     const nodes = getSimulation()?.nodes();
     const hoverNode = nodes ? hitTestNode(mx, my, nodes, getNodeExpand()) : null;
     sharedState.hoverNodeId = hoverNode ? hoverNode.id : null;
     if (sharedState.focusMode && sharedState.directDraw) sharedState.directDraw();
     if (getDraggingNode()) {
-      if (downPoint) { if (Math.hypot(mx - downPoint[0], my - downPoint[1]) >= DRAG_THRESHOLD) setWasDragged(true); }
+      if (downPoint) { if (Math.hypot(mx - downPoint[0], my - downPoint[1]) >= LONG_PRESS_MOVE_TOLERANCE) setWasDragged(true); }
       getDraggingNode().fx = mx; getDraggingNode().fy = my; getSimulation()?.alpha(0.3).restart();
     }
     if (!getDraggingNode() && hoverNode && hoverNode.note?.trim()) {
       if (hoveredNodeNote !== hoverNode.note) { hoveredNodeNote = hoverNode.note; updateTooltip(hoverNode.note, touch.clientX, touch.clientY); }
     } else hideTooltip();
-    // 右击框选不适用于触屏，跳过
   }, { passive: false });
 
   canvas.addEventListener("touchend", (e: TouchEvent) => {
@@ -303,7 +303,7 @@ export function setupCanvasEvents(
 
   canvas.addEventListener("pointermove", (e: PointerEvent) => {
     const [mx, my] = toWorldPos(e);
-    if (downPoint && Math.hypot(mx - downPoint[0], my - downPoint[1]) >= DRAG_THRESHOLD) clearLongPress();
+    if (downPoint && Math.hypot(mx - downPoint[0], my - downPoint[1]) >= LONG_PRESS_MOVE_TOLERANCE) clearLongPress();
     const nodes = getSimulation()?.nodes();
     const hoverNode = nodes ? hitTestNode(mx, my, nodes, getNodeExpand()) : null;
     sharedState.hoverNodeId = hoverNode ? hoverNode.id : null;

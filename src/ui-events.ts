@@ -91,6 +91,7 @@ export function setupCanvasEvents(
   };
 
   let downPoint: [number, number] | null = null;
+  let pendingTouchNode: any = null;
   let longPressTimer: ReturnType<typeof setTimeout> | null = null;
   const clearLongPress = () => { if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; } };
   let lastTapTime = 0;
@@ -194,6 +195,7 @@ export function setupCanvasEvents(
     closeContextMenu(); hideTooltip();
     const [x, y] = toWorldPos(e);
     downPoint = [x, y];
+    const isTouch = e.pointerType === 'touch';
     if (e.button === 2) {
       e.preventDefault(); e.stopImmediatePropagation();
       isRightButtonDown = true;
@@ -210,15 +212,18 @@ export function setupCanvasEvents(
       clearLongPress();
     }, LONG_PRESS_DURATION);
     if (n && e.button === 0) {
-      e.stopImmediatePropagation(); e.preventDefault();
-      setDraggingNode(n); n.fx = n.x; n.fy = n.y; setWasDragged(false); canvas.style.cursor = "grabbing";
-      getSimulation()?.alphaTarget(0.3).restart();
-      ctx.onDragStart?.(n.id);
-      if (ctx.viewport) ctx.viewport.pause = true;
+      if (isTouch) {
+        // 触屏：不立即抓节点，等手指拖动超过阈值再抓（让长按计时器先跑）
+        pendingTouchNode = n;
+      } else {
+        e.stopImmediatePropagation(); e.preventDefault();
+        setDraggingNode(n); n.fx = n.x; n.fy = n.y; setWasDragged(false); canvas.style.cursor = "grabbing";
+        getSimulation()?.alphaTarget(0.3).restart();
+        ctx.onDragStart?.(n.id);
+        if (ctx.viewport) ctx.viewport.pause = true;
+      }
     }
   });
-
-  let pendingTouchNode: any = null; // 触摸到的节点，等拖动超过阈值才正式"抓"
 
   // --- 触屏事件（Android/HarmonyOS 兼容）---
   canvas.addEventListener("touchstart", (e: TouchEvent) => {
@@ -235,7 +240,6 @@ export function setupCanvasEvents(
       if (!getDraggingNode() && !getWasDragged()) triggerContextMenu(touch.clientX, touch.clientY);
       clearLongPress();
     }, LONG_PRESS_DURATION);
-    if (n) e.preventDefault();
   }, { passive: false });
 
   canvas.addEventListener("touchmove", (e: TouchEvent) => {

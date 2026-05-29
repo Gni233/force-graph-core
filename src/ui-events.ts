@@ -250,14 +250,17 @@ export function setupCanvasEvents(
     const hoverNode = nodes ? hitTestNode(mx, my, nodes, getNodeExpand()) : null;
     sharedState.hoverNodeId = hoverNode ? hoverNode.id : null;
     if (sharedState.focusMode && sharedState.directDraw) sharedState.directDraw();
-    // 超过长按阈值 → 正式抓节点开始拖拽
-    if (!getDraggingNode() && pendingTouchNode) {
-      if (downPoint && Math.hypot(mx - downPoint[0], my - downPoint[1]) >= TOUCH_DRAG_THRESHOLD) {
+    // 超过阈值 → 触节点就抓来拖，空白区域就取消长按（正在平移画布）
+    if (downPoint && Math.hypot(mx - downPoint[0], my - downPoint[1]) >= TOUCH_DRAG_THRESHOLD) {
+      if (!getDraggingNode() && pendingTouchNode) {
         setDraggingNode(pendingTouchNode); pendingTouchNode = null;
         const dn = getDraggingNode(); dn.fx = dn.x; dn.fy = dn.y;
         getSimulation()?.alphaTarget(0.3).restart();
         ctx.onDragStart?.(dn.id);
         if (ctx.viewport) ctx.viewport.pause = true;
+      } else if (!pendingTouchNode && !getDraggingNode()) {
+        // 空白区域拖动 = 平移画布 → 取消长按
+        clearLongPress();
       }
     }
     if (getDraggingNode()) {
@@ -328,6 +331,10 @@ export function setupCanvasEvents(
       if (downPoint) { if (Math.hypot(mx - downPoint[0], my - downPoint[1]) >= DRAG_THRESHOLD) setWasDragged(true); }
       getDraggingNode().fx = mx; getDraggingNode().fy = my; getSimulation()?.alpha(0.3).restart();
     }
+    // 空白区域拖动 = 平移画布 → 取消长按
+    if (!pendingTouchNode && !getDraggingNode() && downPoint && Math.hypot(mx - downPoint[0], my - downPoint[1]) >= DRAG_THRESHOLD) {
+      clearLongPress();
+    }
     if (ctx.onLinkCursorMove && ctx.getLinkMode?.() && ctx.getLinkSrc?.()) {
       ctx.onLinkCursorMove(mx, my);
     }
@@ -376,7 +383,7 @@ export function setupCanvasEvents(
       }
       e.preventDefault(); e.stopImmediatePropagation(); return;
     }
-    clearLongPress();
+    clearLongPress(); pendingTouchNode = null;
     if (getDraggingNode()) {
       const node = getDraggingNode();
       // 固定节点拖拽后保持 fx/fy（已在 pointermove 中设置）

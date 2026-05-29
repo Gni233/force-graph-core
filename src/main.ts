@@ -824,9 +824,11 @@ async function main() {
       const id = n.id;
       let sprite = nodeSprites.get(id);
       if (!sprite) {
+        const r = [22, 19, 16, 13, 10, 7][(n.headingLevel || 6) - 1] || 9;
+        const radius = (n.radiusMode === 'custom' || n.radius) ? (n.radius || 9) : r;
         const colorStr = (n.color && n.color !== '#000000') ? n.color : theme.nodeDefaultColor;
         const color = parseInt(colorStr.replace('#', ''), 16);
-        sprite = createNodeSprite(id, n.label || id, n.x, n.y, n.radius || 9, color, lblColor, labelSize);
+        sprite = createNodeSprite(id, n.label || id, n.x, n.y, radius, color, lblColor, labelSize);
         pixi.nodeLayer.addChild(sprite.container);
         nodeSprites.set(id, sprite);
       } else {
@@ -1368,7 +1370,7 @@ async function main() {
   addBtn.onclick = () => {
     const center = pixi?.viewport?.center ?? { x: gw / 2, y: gh / 2 };
     const cx = center.x, cy = center.y;
-    const newNode = { id: 'n_' + Date.now(), label: '新节点', radius: 12, headingLevel: 6, tags: [], x: cx, y: cy };
+    const newNode = { id: 'n_' + Date.now(), label: '新节点', headingLevel: 6, tags: [], x: cx, y: cy };
     saveUndo(); graph.nodes.push(newNode); scheduleSave(); simManager.initSim(); fillNode(newNode.id);
   };
   primaryRow.appendChild(addBtn);
@@ -2233,6 +2235,12 @@ async function main() {
     initSim: () => simManager.initSim(), clearEd, fillNode,
     onTap: (x: number, y: number) => {
       if (handleLinkTap(x, y)) return;
+      // 连线模式：尚未选源节点 → 把当前点击的节点作为源
+      if (linkMode && !linkSrc) {
+        const ns = getSim()?.nodes() || [];
+        const hit = ns.find((nd: any) => (nd.x - x) ** 2 + (nd.y - y) ** 2 <= ((nd.radius || 9) + nodeExpand) ** 2);
+        if (hit) { linkSrc = hit.id; showToast(`源: ${hit.label || hit.id}，请点击目标节点`, 'info', 2000); return; }
+      }
       const nodes = getSim()?.nodes() || [];
       const n = nodes.find((nd: any) => (nd.x - x) ** 2 + (nd.y - y) ** 2 <= ((nd.radius || 9) + nodeExpand) ** 2);
       if (n) { fillNode(n.id); return; }

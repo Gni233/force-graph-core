@@ -5,7 +5,7 @@ import { sharedState } from "./shared-state";
 import { Z_TOOLTIP } from "./layout-constants";
 
 const DRAG_THRESHOLD = 3;
-const LONG_PRESS_MOVE_TOLERANCE = 10;
+const TOUCH_DRAG_THRESHOLD = 10;
 const LONG_PRESS_DURATION = 500;
 
 export interface EventsContext {
@@ -242,14 +242,13 @@ export function setupCanvasEvents(
     if (!e.touches[0]) return;
     const touch = e.touches[0];
     const [mx, my] = toWorldPos({ clientX: touch.clientX, clientY: touch.clientY });
-    if (downPoint && Math.hypot(mx - downPoint[0], my - downPoint[1]) >= LONG_PRESS_MOVE_TOLERANCE) clearLongPress();
     const nodes = getSimulation()?.nodes();
     const hoverNode = nodes ? hitTestNode(mx, my, nodes, getNodeExpand()) : null;
     sharedState.hoverNodeId = hoverNode ? hoverNode.id : null;
     if (sharedState.focusMode && sharedState.directDraw) sharedState.directDraw();
     // 超过长按阈值 → 正式抓节点开始拖拽
     if (!getDraggingNode() && pendingTouchNode) {
-      if (downPoint && Math.hypot(mx - downPoint[0], my - downPoint[1]) >= LONG_PRESS_MOVE_TOLERANCE) {
+      if (downPoint && Math.hypot(mx - downPoint[0], my - downPoint[1]) >= TOUCH_DRAG_THRESHOLD) {
         setDraggingNode(pendingTouchNode); pendingTouchNode = null;
         const dn = getDraggingNode(); dn.fx = dn.x; dn.fy = dn.y;
         getSimulation()?.alphaTarget(0.3).restart();
@@ -258,7 +257,7 @@ export function setupCanvasEvents(
       }
     }
     if (getDraggingNode()) {
-      if (downPoint) { if (Math.hypot(mx - downPoint[0], my - downPoint[1]) >= LONG_PRESS_MOVE_TOLERANCE) setWasDragged(true); }
+      if (downPoint) { if (Math.hypot(mx - downPoint[0], my - downPoint[1]) >= TOUCH_DRAG_THRESHOLD) setWasDragged(true); }
       getDraggingNode().fx = mx; getDraggingNode().fy = my; getSimulation()?.alpha(0.3).restart();
     }
     if (!getDraggingNode() && hoverNode && hoverNode.note?.trim()) {
@@ -311,7 +310,6 @@ export function setupCanvasEvents(
 
   canvas.addEventListener("pointermove", (e: PointerEvent) => {
     const [mx, my] = toWorldPos(e);
-    if (downPoint && Math.hypot(mx - downPoint[0], my - downPoint[1]) >= LONG_PRESS_MOVE_TOLERANCE) clearLongPress();
     const nodes = getSimulation()?.nodes();
     const hoverNode = nodes ? hitTestNode(mx, my, nodes, getNodeExpand()) : null;
     sharedState.hoverNodeId = hoverNode ? hoverNode.id : null;

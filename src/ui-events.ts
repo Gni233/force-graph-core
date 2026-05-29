@@ -92,6 +92,7 @@ export function setupCanvasEvents(
 
   let downPoint: [number, number] | null = null;
   let pendingTouchNode: any = null;
+  let longPressFired = false;
   let longPressTimer: ReturnType<typeof setTimeout> | null = null;
   const clearLongPress = () => { if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; } };
   let lastTapTime = 0;
@@ -208,7 +209,7 @@ export function setupCanvasEvents(
     const n = hitTestNode(x, y, nodes, getNodeExpand());
     clearLongPress();
     longPressTimer = setTimeout(() => {
-      if (!getDraggingNode() && !getWasDragged()) triggerContextMenu(e.clientX, e.clientY);
+      if (!getDraggingNode() && !getWasDragged()) { longPressFired = true; triggerContextMenu(e.clientX, e.clientY); }
       clearLongPress();
     }, LONG_PRESS_DURATION);
     if (n && e.button === 0) {
@@ -239,7 +240,7 @@ export function setupCanvasEvents(
     clearLongPress();
     if (n && ctx.viewport) ctx.viewport.pause = true; // 触节点立刻暂停视口平移
     longPressTimer = setTimeout(() => {
-      if (!getDraggingNode() && !getWasDragged()) triggerContextMenu(touch.clientX, touch.clientY);
+      if (!getDraggingNode() && !getWasDragged()) { longPressFired = true; triggerContextMenu(touch.clientX, touch.clientY); }
       clearLongPress();
     }, LONG_PRESS_DURATION);
   }, { passive: false });
@@ -294,6 +295,8 @@ export function setupCanvasEvents(
       draw();
       return;
     }
+    // 长按菜单刚弹出 → 松手不触发 tap（避免打开编辑面板导致蓝屏）
+    if (longPressFired) { longPressFired = false; if (ctx.viewport) ctx.viewport.pause = false; return; }
     // 无拖拽→处理tap选择
     if (Date.now() - lastTapTime < 300) return;
     lastTapTime = Date.now();
@@ -406,6 +409,7 @@ export function setupCanvasEvents(
   });
 
   canvas.addEventListener("click", (e: MouseEvent) => {
+    if (longPressFired) { longPressFired = false; return; }
     if (getWasDragged()) { setWasDragged(false); return; }
     // 若 touchend 刚刚处理过 tap（300ms 内），跳过避免双击
     if (Date.now() - lastTapTime < 500) return;

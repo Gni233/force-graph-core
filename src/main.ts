@@ -1296,12 +1296,12 @@ async function main() {
             showToast(`已打开: ${dir.name}`, 'success');
             return;
           }
+          showToast('未选中目录', 'warning');
+          return;
         } catch (e: any) {
-          showToast('SAF 错误: ' + (e.message || '未知'), 'error');
+          showToast('SAF 失败: ' + (e.message || '未知'), 'error');
           return;
         }
-        showToast('已取消目录选择', 'warning');
-        return;
       }
       // 2. 桌面 Electron
       const ea = (window as any).electronAPI;

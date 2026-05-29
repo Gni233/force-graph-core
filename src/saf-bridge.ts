@@ -18,8 +18,9 @@ export async function safPickDirectory(): Promise<{ path: string; name: string }
   try {
     const result = await p.pickDirectory();
     return { path: result.path, name: result.name };
-  } catch {
-    return null;
+  } catch (e: any) {
+    // 抛出错误让上层处理
+    throw new Error(e?.message || 'SAF pickDirectory failed');
   }
 }
 
@@ -40,8 +41,8 @@ export async function safListFiles(): Promise<FileEntry[]> {
   try {
     const result = await p.listFiles();
     return (result.files || []) as FileEntry[];
-  } catch {
-    return [];
+  } catch (e: any) {
+    throw new Error(e?.message || 'SAF listFiles failed');
   }
 }
 
@@ -51,8 +52,8 @@ export async function safReadFile(fileName: string): Promise<string | null> {
   try {
     const result = await p.readFile({ fileName });
     return result.data as string;
-  } catch {
-    return null;
+  } catch (e: any) {
+    throw new Error(e?.message || 'SAF readFile failed');
   }
 }
 
@@ -62,8 +63,8 @@ export async function safWriteFile(fileName: string, data: string): Promise<bool
   try {
     await p.writeFile({ fileName, data });
     return true;
-  } catch {
-    return false;
+  } catch (e: any) {
+    throw new Error(e?.message || 'SAF writeFile failed');
   }
 }
 
@@ -73,8 +74,8 @@ export async function safDeleteFile(fileName: string): Promise<boolean> {
   try {
     await p.deleteFile({ fileName });
     return true;
-  } catch {
-    return false;
+  } catch (e: any) {
+    throw new Error(e?.message || 'SAF deleteFile failed');
   }
 }
 

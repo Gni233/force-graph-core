@@ -177,9 +177,9 @@ export function buildSettings(
   const heatingTimeSlider = makeSlider(container, "加热时间(秒)", 0, 10, getHeatingTime(), 0.5, v => { setHeatingTime(v); getSaveData()(); });
   const alphaTargetSlider = makeSlider(container, "目标活跃度", 0, 1, getAlphaTarget(), 0.05, v => { setAlphaTarget(v); getInitSim()(); getSaveData()(); });
 
-  // === 标签与外观 ===
-  addSection("标签与外观");
-  const labelSizeSlider = makeSlider(container, "标签大小", 8, 40, getLabelSize(), 1, v => { setLabelSize(v); getSaveData()(); });
+  // === 文字与外观 ===
+  addSection("文字与外观");
+  const labelSizeSlider = makeSlider(container, "文字大小", 8, 40, getLabelSize(), 1, v => { setLabelSize(v); getSaveData()(); });
   const editPanelOpacitySlider = makeSlider(container, "编辑面板透明度", 0, 1, getEditPanelOpacity(), 0.05, v => { setEditPanelOpacity(v); getSaveData()(); });
   const nodeExpandSlider = makeSlider(container, "节点点击扩展", 0, 20, getNodeExpand(), 1, v => { setNodeExpand(v); getSaveData()(); });
   const lineExpandSlider = makeSlider(container, "边点击扩展", 0, 20, getLineExpand(), 1, v => { setLineExpand(v); getSaveData()(); });

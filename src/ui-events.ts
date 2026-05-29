@@ -241,10 +241,10 @@ export function setupCanvasEvents(
   }, { passive: false });
 
   canvas.addEventListener("touchmove", (e: TouchEvent) => {
-    clearLongPress();
     if (!e.touches[0]) return;
     const touch = e.touches[0];
     const [mx, my] = toWorldPos({ clientX: touch.clientX, clientY: touch.clientY });
+    if (downPoint && Math.hypot(mx - downPoint[0], my - downPoint[1]) >= DRAG_THRESHOLD) clearLongPress();
     const nodes = getSimulation()?.nodes();
     const hoverNode = nodes ? hitTestNode(mx, my, nodes, getNodeExpand()) : null;
     sharedState.hoverNodeId = hoverNode ? hoverNode.id : null;
@@ -302,8 +302,8 @@ export function setupCanvasEvents(
   });
 
   canvas.addEventListener("pointermove", (e: PointerEvent) => {
-    clearLongPress();
     const [mx, my] = toWorldPos(e);
+    if (downPoint && Math.hypot(mx - downPoint[0], my - downPoint[1]) >= DRAG_THRESHOLD) clearLongPress();
     const nodes = getSimulation()?.nodes();
     const hoverNode = nodes ? hitTestNode(mx, my, nodes, getNodeExpand()) : null;
     sharedState.hoverNodeId = hoverNode ? hoverNode.id : null;

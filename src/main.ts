@@ -828,6 +828,7 @@ async function main() {
         nodeSprites.set(id, sprite);
       } else {
         updateNodePosition(sprite, n.x, n.y);
+        sprite.label.text = n.label || id;
       }
 
       // 标签在缩放 0.3-0.45 区间淡入淡出

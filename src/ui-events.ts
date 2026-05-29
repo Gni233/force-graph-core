@@ -213,8 +213,9 @@ export function setupCanvasEvents(
     }, LONG_PRESS_DURATION);
     if (n && e.button === 0) {
       if (isTouch) {
-        // 触屏：不立即抓节点，等手指拖动超过阈值再抓（让长按计时器先跑）
+        // 触屏：不立即抓节点，但先暂停视口平移（防止抖动拖动画布）
         pendingTouchNode = n;
+        if (ctx.viewport) ctx.viewport.pause = true;
       } else {
         e.stopImmediatePropagation(); e.preventDefault();
         setDraggingNode(n); n.fx = n.x; n.fy = n.y; setWasDragged(false); canvas.style.cursor = "grabbing";
@@ -236,6 +237,7 @@ export function setupCanvasEvents(
     const n = hitTestNode(x, y, nodes, getNodeExpand());
     pendingTouchNode = n || null;
     clearLongPress();
+    if (n && ctx.viewport) ctx.viewport.pause = true; // 触节点立刻暂停视口平移
     longPressTimer = setTimeout(() => {
       if (!getDraggingNode() && !getWasDragged()) triggerContextMenu(touch.clientX, touch.clientY);
       clearLongPress();
@@ -300,6 +302,7 @@ export function setupCanvasEvents(
     if (!e.changedTouches[0]) return;
     const touch = e.changedTouches[0];
     handleTap(...toWorldPos({ clientX: touch.clientX, clientY: touch.clientY }));
+    if (ctx.viewport) ctx.viewport.pause = false;
   });
 
   canvas.addEventListener("touchcancel", () => {
@@ -309,8 +312,8 @@ export function setupCanvasEvents(
       node.fx = null; node.fy = null;
       setDraggingNode(null); getSimulation()?.alphaTarget(0);
       ctx.onDragEnd?.();
-      if (ctx.viewport) ctx.viewport.pause = false;
     }
+    if (ctx.viewport) ctx.viewport.pause = false;
     downPoint = null;
     draw();
   });

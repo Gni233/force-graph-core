@@ -104,11 +104,14 @@ export function createSidebar(
 
   function addLongPress(el: HTMLElement, buildItems: () => { text: string; action: () => void }[]) {
     let sx = 0, sy = 0;
+    let elTarget: EventTarget | null = null;
     el.addEventListener('touchstart', (e: TouchEvent) => {
       clearSidebarLongPress();
+      elTarget = e.target;
       sx = e.touches[0]?.clientX ?? 0; sy = e.touches[0]?.clientY ?? 0;
       sidebarLongPressTimer = setTimeout(() => {
-        showMenuAt(sx, sy, buildItems());
+        // 只在触摸的是自身（非子元素冒泡）时弹出菜单
+        if (elTarget === el) showMenuAt(sx, sy, buildItems());
       }, 500);
     }, { passive: true });
     el.addEventListener('touchmove', (e: TouchEvent) => {
@@ -304,7 +307,7 @@ export function createSidebar(
       }},
     ]);
   };
-  // 触屏长按（空白区域）
+  // 触屏长按（空白区域，仅 fileTree 本身）
   addLongPress(fileTree, () => [
     { text: '新建图', action: async () => {
       const name = await safePrompt('输入图文件名（自动加 .json）：');

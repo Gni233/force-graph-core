@@ -15,6 +15,7 @@ import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
+import com.getcapacitor.annotation.ActivityCallback;
 import com.getcapacitor.annotation.CapacitorPlugin;
 
 import java.io.BufferedReader;
@@ -83,7 +84,7 @@ public class SafPlugin extends Plugin {
         startActivityForResult(call, intent, "pickDirectoryResult");
     }
 
-    /** Callback for pickDirectory result */
+    @ActivityCallback
     private void pickDirectoryResult(PluginCall call, ActivityResult result) {
         if (result.getResultCode() == android.app.Activity.RESULT_OK && result.getData() != null) {
             Uri treeUri = result.getData().getData();

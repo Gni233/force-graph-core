@@ -72,24 +72,31 @@ export function createSidebar(
   // 右键菜单工厂
   const showMenuAt = (screenX: number, screenY: number, items: { text: string; action: () => void }[]) => {
     const menu = document.createElement('div');
-    menu.style.cssText = `position:absolute;left:${screenX - sidebar.getBoundingClientRect().left}px;top:${screenY - sidebar.getBoundingClientRect().top}px;z-index:${Z_CONTEXT_MENU};background:${V('--fg-surface', '#3a3a3a')};border:1px solid ${V('--fg-border', '#555')};border-radius:${V('--fg-radius-sm', '4px')};padding:4px 0;min-width:100px;font-size:0.85em;box-shadow:${V('--fg-shadow-md', '0 4px 16px rgba(0,0,0,0.4)')};color:${V('--fg-text', '#ccc')};`;
+    // 用 fixed 定位 + appShell 挂载，避免被 sidebar overflow:hidden 裁剪
+    menu.style.cssText = `position:fixed;left:${screenX}px;top:${screenY}px;z-index:${Z_CONTEXT_MENU};background:${V('--fg-surface', '#3a3a3a')};border:1px solid ${V('--fg-border', '#555')};border-radius:${V('--fg-radius-sm', '4px')};padding:4px 0;min-width:100px;font-size:0.85em;box-shadow:${V('--fg-shadow-md', '0 4px 16px rgba(0,0,0,0.4)')};color:${V('--fg-text', '#ccc')};`;
     items.forEach(it => {
       const mi = document.createElement('div');
       mi.textContent = it.text;
       mi.style.cssText = `padding:4px 10px;cursor:pointer;transition:background var(--fg-transition-fast,0.15s ease);`;
       mi.onmouseenter = () => mi.style.background = V('--fg-button-hover', '#555');
       mi.onmouseleave = () => mi.style.background = '';
-      mi.onclick = () => { it.action(); menu.remove(); };
+      mi.onclick = () => { it.action(); menu.remove(); cleanup(); };
       menu.appendChild(mi);
     });
-    sidebar.appendChild(menu);
+    parent.appendChild(menu);
+    // 防溢出屏幕边缘
+    requestAnimationFrame(() => {
+      const r = menu.getBoundingClientRect();
+      if (r.right > window.innerWidth - 4) menu.style.left = (window.innerWidth - r.width - 8) + 'px';
+      if (r.bottom > window.innerHeight - 4) menu.style.top = (window.innerHeight - r.height - 8) + 'px';
+    });
     const close = (ev: Event) => { if (!menu.contains(ev.target as Node)) { menu.remove(); cleanup(); } };
-    const cleanup = () => { document.removeEventListener('click', closeVoid); document.removeEventListener('touchend', closeVoid); };
-    const closeVoid = close as EventListener;
+    const cleanup = () => { document.removeEventListener('pointerdown', closePtr); document.removeEventListener('contextmenu', closePtr); };
+    const closePtr = close as EventListener;
     setTimeout(() => {
-      document.addEventListener('click', closeVoid);
-      document.addEventListener('touchend', closeVoid);
-    }, 0);
+      document.addEventListener('pointerdown', closePtr);
+      document.addEventListener('contextmenu', closePtr);
+    }, 100); // 延迟 100ms 避免 touchend 立即关闭菜单
   };
 
   const showMenu = (e: MouseEvent, items: { text: string; action: () => void }[]) => {
@@ -102,18 +109,18 @@ export function createSidebar(
   const clearSidebarLongPress = () => { if (sidebarLongPressTimer) { clearTimeout(sidebarLongPressTimer); sidebarLongPressTimer = null; } };
 
   function addLongPress(el: HTMLElement, buildItems: () => { text: string; action: () => void }[]) {
+    let sx = 0, sy = 0;
     el.addEventListener('touchstart', (e: TouchEvent) => {
       clearSidebarLongPress();
-      let moved = false;
+      sx = e.touches[0]?.clientX ?? 0; sy = e.touches[0]?.clientY ?? 0;
       sidebarLongPressTimer = setTimeout(() => {
-        if (!moved) {
-          const t = (e as any)._startTouch || e.touches[0];
-          showMenuAt(t.clientX, t.clientY, buildItems());
-        }
+        showMenuAt(sx, sy, buildItems());
       }, 500);
-      if (e.touches[0]) (e as any)._startTouch = e.touches[0];
     }, { passive: true });
-    el.addEventListener('touchmove', () => { clearSidebarLongPress(); }, { passive: true });
+    el.addEventListener('touchmove', (e: TouchEvent) => {
+      const x = e.touches[0]?.clientX ?? 0, y = e.touches[0]?.clientY ?? 0;
+      if (Math.hypot(x - sx, y - sy) > 10) clearSidebarLongPress();
+    }, { passive: true });
     el.addEventListener('touchend', () => { clearSidebarLongPress(); });
     el.addEventListener('touchcancel', () => { clearSidebarLongPress(); });
   }

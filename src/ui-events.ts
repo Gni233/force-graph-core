@@ -218,6 +218,8 @@ export function setupCanvasEvents(
     }
   });
 
+  let pendingTouchNode: any = null; // 触摸到的节点，等拖动超过阈值才正式"抓"
+
   // --- 触屏事件（Android/HarmonyOS 兼容）---
   canvas.addEventListener("touchstart", (e: TouchEvent) => {
     closeContextMenu(); hideTooltip();
@@ -227,18 +229,13 @@ export function setupCanvasEvents(
     downPoint = [x, y];
     const nodes = getSimulation()?.nodes();
     const n = hitTestNode(x, y, nodes, getNodeExpand());
+    pendingTouchNode = n || null;
     clearLongPress();
     longPressTimer = setTimeout(() => {
       if (!getDraggingNode() && !getWasDragged()) triggerContextMenu(touch.clientX, touch.clientY);
       clearLongPress();
     }, LONG_PRESS_DURATION);
-    if (n) {
-      e.preventDefault();
-      setDraggingNode(n); n.fx = n.x; n.fy = n.y; setWasDragged(false);
-      getSimulation()?.alphaTarget(0.3).restart();
-      ctx.onDragStart?.(n.id);
-      if (ctx.viewport) ctx.viewport.pause = true;
-    }
+    if (n) e.preventDefault();
   }, { passive: false });
 
   canvas.addEventListener("touchmove", (e: TouchEvent) => {
@@ -250,6 +247,16 @@ export function setupCanvasEvents(
     const hoverNode = nodes ? hitTestNode(mx, my, nodes, getNodeExpand()) : null;
     sharedState.hoverNodeId = hoverNode ? hoverNode.id : null;
     if (sharedState.focusMode && sharedState.directDraw) sharedState.directDraw();
+    // 超过长按阈值 → 正式抓节点开始拖拽
+    if (!getDraggingNode() && pendingTouchNode) {
+      if (downPoint && Math.hypot(mx - downPoint[0], my - downPoint[1]) >= LONG_PRESS_MOVE_TOLERANCE) {
+        setDraggingNode(pendingTouchNode); pendingTouchNode = null;
+        const dn = getDraggingNode(); dn.fx = dn.x; dn.fy = dn.y;
+        getSimulation()?.alphaTarget(0.3).restart();
+        ctx.onDragStart?.(dn.id);
+        if (ctx.viewport) ctx.viewport.pause = true;
+      }
+    }
     if (getDraggingNode()) {
       if (downPoint) { if (Math.hypot(mx - downPoint[0], my - downPoint[1]) >= LONG_PRESS_MOVE_TOLERANCE) setWasDragged(true); }
       getDraggingNode().fx = mx; getDraggingNode().fy = my; getSimulation()?.alpha(0.3).restart();
@@ -261,6 +268,7 @@ export function setupCanvasEvents(
 
   canvas.addEventListener("touchend", (e: TouchEvent) => {
     clearLongPress();
+    pendingTouchNode = null;
     // 先处理拖拽结束
     if (getDraggingNode()) {
       const node = getDraggingNode();
@@ -289,7 +297,7 @@ export function setupCanvasEvents(
   });
 
   canvas.addEventListener("touchcancel", () => {
-    clearLongPress();
+    clearLongPress(); pendingTouchNode = null;
     if (getDraggingNode()) {
       const node = getDraggingNode();
       node.fx = null; node.fy = null;

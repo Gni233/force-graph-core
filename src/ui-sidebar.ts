@@ -72,8 +72,11 @@ export function createSidebar(
   // 右键菜单工厂
   const showMenuAt = (screenX: number, screenY: number, items: { text: string; action: () => void }[]) => {
     const menu = document.createElement('div');
-    // 用 fixed 定位 + appShell 挂载，避免被 sidebar overflow:hidden 裁剪
-    menu.style.cssText = `position:fixed;left:${screenX}px;top:${screenY}px;z-index:${Z_CONTEXT_MENU};background:${V('--fg-surface', '#3a3a3a')};border:1px solid ${V('--fg-border', '#555')};border-radius:${V('--fg-radius-sm', '4px')};padding:4px 0;min-width:100px;font-size:0.85em;box-shadow:${V('--fg-shadow-md', '0 4px 16px rgba(0,0,0,0.4)')};color:${V('--fg-text', '#ccc')};`;
+    // position:fixed + 直接计算位置，避免溢出屏幕右/下边缘
+    const estW = 140, estH = items.length * 28;
+    const left = screenX + estW > window.innerWidth - 8 ? window.innerWidth - estW - 8 : screenX;
+    const top = screenY + estH > window.innerHeight - 8 ? window.innerHeight - estH - 8 : screenY;
+    menu.style.cssText = `position:fixed;left:${left}px;top:${top}px;z-index:${Z_CONTEXT_MENU};background:${V('--fg-surface', '#3a3a3a')};border:1px solid ${V('--fg-border', '#555')};border-radius:${V('--fg-radius-sm', '4px')};padding:4px 0;min-width:100px;font-size:0.85em;box-shadow:${V('--fg-shadow-md', '0 4px 16px rgba(0,0,0,0.4)')};color:${V('--fg-text', '#ccc')};`;
     items.forEach(it => {
       const mi = document.createElement('div');
       mi.textContent = it.text;
@@ -84,19 +87,10 @@ export function createSidebar(
       menu.appendChild(mi);
     });
     parent.appendChild(menu);
-    // 防溢出屏幕边缘
-    requestAnimationFrame(() => {
-      const r = menu.getBoundingClientRect();
-      if (r.right > window.innerWidth - 4) menu.style.left = (window.innerWidth - r.width - 8) + 'px';
-      if (r.bottom > window.innerHeight - 4) menu.style.top = (window.innerHeight - r.height - 8) + 'px';
-    });
     const close = (ev: Event) => { if (!menu.contains(ev.target as Node)) { menu.remove(); cleanup(); } };
-    const cleanup = () => { document.removeEventListener('pointerdown', closePtr); document.removeEventListener('contextmenu', closePtr); };
+    const cleanup = () => { document.removeEventListener('pointerdown', closePtr); };
     const closePtr = close as EventListener;
-    setTimeout(() => {
-      document.addEventListener('pointerdown', closePtr);
-      document.addEventListener('contextmenu', closePtr);
-    }, 100); // 延迟 100ms 避免 touchend 立即关闭菜单
+    setTimeout(() => { document.addEventListener('pointerdown', closePtr); }, 200);
   };
 
   const showMenu = (e: MouseEvent, items: { text: string; action: () => void }[]) => {

@@ -513,6 +513,9 @@ async function main() {
       graph.edges = saved.edges || [];
       graph.groups = saved.groups || [];
       if (saved.settings) graph.settings = saved.settings;
+      // 迁移：去掉旧默认色（#000000 / #5B8FF9），让节点颜色跟随主题
+      const oldDefaults = new Set(['', '#000000', '#5B8FF9']);
+      graph.nodes.forEach(n => { if (oldDefaults.has(n.color)) delete n.color; });
     } else {
       graph.nodes = [];
       graph.edges = [];
@@ -1365,7 +1368,7 @@ async function main() {
   addBtn.onclick = () => {
     const center = pixi?.viewport?.center ?? { x: gw / 2, y: gh / 2 };
     const cx = center.x, cy = center.y;
-    const newNode = { id: 'n_' + Date.now(), label: '新节点', radius: 12, headingLevel: 6, tags: [], color: '#5B8FF9', x: cx, y: cy };
+    const newNode = { id: 'n_' + Date.now(), label: '新节点', radius: 12, headingLevel: 6, tags: [], x: cx, y: cy };
     saveUndo(); graph.nodes.push(newNode); scheduleSave(); simManager.initSim(); fillNode(newNode.id);
   };
   primaryRow.appendChild(addBtn);
@@ -1643,7 +1646,7 @@ async function main() {
       else if (/\.(mp3|wav|ogg|flac|aac|m4a)$/i.test(name)) mediaType = 'audio';
       else if (/\.(mp4|webm|mov|avi|mkv)$/i.test(name)) mediaType = 'video';
       const id = 'n_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
-      graph.nodes.push({ id, label: name, radius: 11, headingLevel: 4, tags: [], color: '#5B8FF9',
+      graph.nodes.push({ id, label: name, radius: 11, headingLevel: 4, tags: [],
         x: Math.random() * 200 - 100, y: Math.random() * 200 - 100,
         mediaType, mediaUrl: filePath });
       scheduleSave(); simManager.initSim(); draw();
@@ -1661,7 +1664,7 @@ async function main() {
         else if (/\.(mp3|wav|ogg|flac|aac|m4a)$/i.test(file.name)) mediaType = 'audio';
         else if (/\.(mp4|webm|mov|avi|mkv)$/i.test(file.name)) mediaType = 'video';
         const id = 'n_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
-        graph.nodes.push({ id, label: file.name, radius: 11, headingLevel: 4, tags: [], color: '#5B8FF9',
+        graph.nodes.push({ id, label: file.name, radius: 11, headingLevel: 4, tags: [],
           x: Math.random() * 200 - 100, y: Math.random() * 200 - 100,
           mediaType, mediaUrl: URL.createObjectURL(file) });
       }
@@ -2080,7 +2083,7 @@ async function main() {
         action: () => {
           const center = pixi?.viewport?.center ?? { x: gw / 2, y: gh / 2 };
           const cx = center.x, cy = center.y;
-          saveUndo(); graph.nodes.push({ id: 'n_' + Date.now(), label: '新节点', radius: 12, headingLevel: 6, tags: [], color: '#5B8FF9', x: cx, y: cy });
+          saveUndo(); graph.nodes.push({ id: 'n_' + Date.now(), label: '新节点', radius: 12, headingLevel: 6, tags: [], x: cx, y: cy });
           scheduleSave(); simManager.initSim();
         },
       });
@@ -2190,7 +2193,7 @@ async function main() {
     else if (/\.(mp3|wav|ogg|flac|aac|m4a)$/i.test(file.name)) mediaType = 'audio';
     else if (/\.(mp4|webm|mov|avi|mkv)$/i.test(file.name)) mediaType = 'video';
     const url = URL.createObjectURL(file);
-    saveUndo(); graph.nodes.push({ id, label: file.name, radius: 12, headingLevel: 4, tags: [], color: '#5B8FF9', x: wp.x, y: wp.y, mediaType, mediaUrl: url });
+    saveUndo(); graph.nodes.push({ id, label: file.name, radius: 12, headingLevel: 4, tags: [], x: wp.x, y: wp.y, mediaType, mediaUrl: url });
     scheduleSave(); simManager.initSim(); draw();
   });
 

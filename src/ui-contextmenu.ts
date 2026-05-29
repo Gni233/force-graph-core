@@ -52,8 +52,7 @@ export function showContextMenu(
   const menu = document.createElement("div");
   menu.style.cssText =
     `position:absolute;left:${x}px;top:${y}px;z-index:${Z_CONTEXT_MENU};` +
-    `background:${V('--fg-surface-glass', 'rgba(40,42,48,0.8)')};` +
-    `backdrop-filter:blur(var(--fg-glass-blur-md,10px));-webkit-backdrop-filter:blur(var(--fg-glass-blur-md,10px));` +
+    `background:${V('--fg-surface-elevated', '#2a2a2a')};` +
     `border:1px solid ${V('--fg-glass-border', 'rgba(255,255,255,0.1)')};` +
     `border-radius:${V('--fg-radius-md', '6px')};` +
     `box-shadow:${V('--fg-shadow-md', '0 4px 16px rgba(0,0,0,0.3)')};` +

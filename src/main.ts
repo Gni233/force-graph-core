@@ -1287,7 +1287,7 @@ async function main() {
           showToast(`已打开: ${dir.name}`, 'success');
           return;
         }
-        return; // 用户取消
+        // SAF 失败或取消 → 跳过，继续尝试后面的方式（不要 return）
       }
       // 2. 桌面 Electron
       const ea = (window as any).electronAPI;
@@ -1297,8 +1297,8 @@ async function main() {
           ea.configWrite({ folderPath });
           fileSystemMountPath = folderPath;
           await refreshFileTree();
+          return;
         }
-        return;
       }
       // 3. Web File System Access API (showDirectoryPicker)
       if ('showDirectoryPicker' in window) {
@@ -1308,11 +1308,13 @@ async function main() {
             await saveFolderHandle(h);
             fileSystemMountPath = h.name;
             await refreshFileTree();
+            return;
           }
         } catch {}
-        return;
+        // showDirectoryPicker 存在但失败 → 不回退，因为这个 WebView
+        // 的 input[type=file] 用同步 click() 最可靠
       }
-      // 4. 回退：文件选择器导入
+      // 4. 兜底：同步创建 input 并 click（所有 WebView 都支持）
       triggerFileImport();
     },
     getFolderPath: () => fileSystemMountPath || '（未选择）',

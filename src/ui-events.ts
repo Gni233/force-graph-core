@@ -212,7 +212,8 @@ export function setupCanvasEvents(
     }, LONG_PRESS_DURATION);
     if (n && e.button === 0) {
       if (isTouch) {
-        // 触屏：不立即抓节点，但先暂停视口平移（防止抖动拖动画布）
+        // 触屏：不立即抓节点，但先暂停视口平移，阻止浏览器默认行为
+        e.preventDefault();
         pendingTouchNode = n;
         if (ctx.viewport) ctx.viewport.pause = true;
       } else {
@@ -236,6 +237,7 @@ export function setupCanvasEvents(
     const n = hitTestNode(x, y, nodes, getNodeExpand());
     pendingTouchNode = n || null;
     clearLongPress();
+    e.preventDefault(); // 阻止浏览器原生长按行为（文本选择/放大镜）
     if (n && ctx.viewport) ctx.viewport.pause = true; // 触节点立刻暂停视口平移
     longPressTimer = setTimeout(() => {
       if (!getDraggingNode() && !getWasDragged()) { triggerContextMenu(touch.clientX, touch.clientY); }

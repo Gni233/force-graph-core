@@ -14,6 +14,7 @@ import { createTabBar } from './ui-tabs';
 import { openFolder, restoreFolder, listFileTree, flatFilePaths, readGraphFile, writeGraphFile, deleteFile, renameFile } from './file-system';
 import { saveFolderHandle, loadFolderHandle, clearFolderHandle } from './folder-store';
 import { isCapacitor, importFilesMobile, pickDirectoryAndImport, listFilesMobile, readFileMobile, writeFileMobile, deleteFileMobile, downloadApk, downloadReleaseApk, installApk } from './fs-mobile';
+import { safPickDirectory, safRestoreDirectory, safListFiles, safReadFile, safWriteFile, safDeleteFile, safIsAvailable } from './saf-bridge';
 import { isHarmonyOS } from './utils/platform';
 import { listFilesHarmony, readFileHarmony, writeFileHarmony, deleteFileHarmony, importFilesHarmony } from './fs-harmony';
 import { safePrompt } from './dialog';
@@ -236,7 +237,14 @@ async function main() {
 
   // 存储适配器：所有图统一走 localStorage
   const readGraphData = async (fileName: string): Promise<GraphData | null> => {
-    // 优先 Capacitor Filesystem（不管 isCapacitor 返回值）
+    // SAF 目录模式
+    if (fileSystemMountPath && fileSystemMountPath !== 'graphs' && safIsAvailable() && fileName !== 'demo') {
+      try {
+        const raw = await safReadFile(fileName);
+        if (raw) return JSON.parse(raw);
+      } catch {}
+    }
+    // Capacitor Filesystem
     if (fileSystemMountPath === 'graphs' && fileName !== 'demo') {
       try {
         const data = await readFileMobile(fileName);
@@ -259,7 +267,12 @@ async function main() {
   const writeGraphData = async (fileName: string, data: GraphData): Promise<void> => {
     const store = createStorage(fileName);
     await store.writeData(data);
-    // 优先 Capacitor Filesystem
+    // SAF 目录模式
+    if (fileSystemMountPath && fileSystemMountPath !== 'graphs' && safIsAvailable() && fileName !== 'demo') {
+      try { await safWriteFile(fileName, JSON.stringify(data, null, 2)); } catch {}
+      return;
+    }
+    // Capacitor Filesystem
     if (fileSystemMountPath === 'graphs' && fileName !== 'demo') {
       try { await writeFileMobile(fileName, data); } catch {}
       return;
@@ -298,7 +311,9 @@ async function main() {
     onNewFile: async (path) => {
       const presetSettings = Object.keys(presetDefaults).length > 0 ? { ...DEFAULT_SETTINGS, ...presetDefaults } : { ...DEFAULT_SETTINGS };
       const empty: GraphData = { nodes: [], edges: [], groups: [], settings: presetSettings };
-      if (fileSystemMountPath === 'graphs') {
+      if (fileSystemMountPath && fileSystemMountPath !== 'graphs' && safIsAvailable()) {
+        try { await safWriteFile(path, JSON.stringify(empty, null, 2)); } catch {}
+      } else if (fileSystemMountPath === 'graphs') {
         try { await writeFileMobile(path, empty); } catch {}
       } else if (isHarmony) {
         await writeFileHarmony(path, empty);
@@ -310,7 +325,9 @@ async function main() {
       await openTab(path);
     },
     onDeleteFile: async (path) => {
-      if (fileSystemMountPath === 'graphs') { try { await deleteFileMobile(path); } catch {} }
+      if (fileSystemMountPath && fileSystemMountPath !== 'graphs' && safIsAvailable()) {
+        try { await safDeleteFile(path); } catch {}
+      } else if (fileSystemMountPath === 'graphs') { try { await deleteFileMobile(path); } catch {} }
       else if (isHarmony) { await deleteFileHarmony(path); }
       else { await deleteFile(path); }
       openTabs = openTabs.filter(t => t !== path);
@@ -324,7 +341,14 @@ async function main() {
     },
     onRenameFile: async (oldPath, newName) => {
       const newPath = newName.endsWith('.json') ? newName : newName + '.json';
-      if (fileSystemMountPath === 'graphs') {
+      if (fileSystemMountPath && fileSystemMountPath !== 'graphs' && safIsAvailable()) {
+        try {
+          const content = await safReadFile(oldPath);
+          const data = content ? JSON.parse(content) : { nodes: [], edges: [], groups: [] };
+          await safWriteFile(newPath, JSON.stringify(data, null, 2));
+          await safDeleteFile(oldPath);
+        } catch {}
+      } else if (fileSystemMountPath === 'graphs') {
         try {
           const content = await readFileMobile(oldPath);
           await writeFileMobile(newPath, content || { nodes: [], edges: [], groups: [] });
@@ -391,7 +415,13 @@ async function main() {
   sidebar.sidebar.style.cssText = `position:absolute;left:${SIDEBAR_LEFT}px;top:6px;bottom:6px;z-index:${Z_FLOATING_UI};width:${getResponsiveSidebarWidth()}px;min-width:${SIDEBAR_MIN_WIDTH}px;display:flex;flex-direction:column;font-size:${V('--fg-font-md', '0.85em')};overflow:hidden;`;
 
   const refreshFileTree = async () => {
-    // 优先 Capacitor Filesystem（无论 isCapacitor 返回值，APK 自带的插件）
+    // SAF 目录模式（Obsidian 式）
+    if (fileSystemMountPath && fileSystemMountPath !== 'graphs' && safIsAvailable()) {
+      const files = await safListFiles();
+      sidebar.updateFileTree(files, activeTab);
+      return;
+    }
+    // Capacitor Filesystem
     if (fileSystemMountPath === 'graphs') {
       try {
         const files = await listFilesMobile();
@@ -1248,7 +1278,18 @@ async function main() {
       await refreshFileTree();
     } : undefined,
     onOpenFolder: async () => {
-      // 桌面 Electron
+      // 1. Android SAF 原生目录选择器（Obsidian 式）
+      if (safIsAvailable()) {
+        const dir = await safPickDirectory();
+        if (dir) {
+          fileSystemMountPath = dir.name;
+          await refreshFileTree();
+          showToast(`已打开: ${dir.name}`, 'success');
+          return;
+        }
+        return; // 用户取消
+      }
+      // 2. 桌面 Electron
       const ea = (window as any).electronAPI;
       if (ea?.openFolder) {
         const folderPath = await ea.openFolder();
@@ -1259,7 +1300,7 @@ async function main() {
         }
         return;
       }
-      // Web File System Access API (showDirectoryPicker)
+      // 3. Web File System Access API (showDirectoryPicker)
       if ('showDirectoryPicker' in window) {
         try {
           const h = await openFolder();
@@ -1271,7 +1312,7 @@ async function main() {
         } catch {}
         return;
       }
-      // Capacitor/移动端：调用文件选择器导入，存入 graphs/ 目录
+      // 4. 回退：文件选择器导入
       triggerFileImport();
     },
     getFolderPath: () => fileSystemMountPath || '（未选择）',
@@ -2241,8 +2282,13 @@ async function main() {
   }
   renderAllTabs();
 
-  // 尝试恢复文件夹
-  fileSystemMountPath = 'graphs';
+  // 尝试恢复文件夹（优先级: SAF > showDirectoryPicker > Capacitor > localStorage）
+  const safDir = safIsAvailable() ? await safRestoreDirectory() : null;
+  if (safDir) {
+    fileSystemMountPath = safDir.name;
+    await refreshFileTree();
+  } else {
+    fileSystemMountPath = 'graphs';
   await refreshFileTree();
   // Capacitor 可能还没初始化 → 延迟重试几次
   let _retry = 0;
@@ -2269,6 +2315,7 @@ async function main() {
       if (ok) { await refreshFileTree(); }
     }
   }
+  } // end else (SAF not available or not restored)
 
   // 在 loadGraphData（触发模拟）之前就把原点屏中
   {
